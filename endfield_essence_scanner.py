@@ -14,6 +14,7 @@ import win32gui
 import os
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import json
 
 # DPI 설정 (윈도우 배율 대응)
 try:
@@ -24,65 +25,29 @@ except:
 # 테서랙트 경로 (본인의 설치 경로에 맞게 확인 필요)
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-TARGET_KEYWORDS = {
-    "main attribute": "주요 능력치", "agility": "민첩성", "strength": "힘", "will": "의지", "intellect": "지능",
-    "attack": "공격력", "hp": "생명력", "treatment efficiency": "치유 효율", "critical rate": "치확",
-    "ultimate": "궁충", "arts intensity": "아츠 강도", "arts dmg": "아츠 피해",
-    "physical": "물리 피해", "electric": "전기 피해", "heat": "열기 피해", "cryo": "냉기 피해", "nature": "자연 피해",
-    "assault": "강공", "suppression": "억제", "pursuit": "추격", "crusher": "분쇄", "combative": "기예",
-    "detonate": "방출", "flow": "흐름", "efficacy": "효율", "infliction": "고통", "fracture": "골절",
-    "inspiring": "사기", "twilight": "어둠", "medicant": "의료", "brutality": "잔혹"
-}
+# ============================================================
+# JSON 파일 로드
+# ============================================================
+def load_json(filename):
+    """JSON 파일을 읽어서 딕셔너리로 반환"""
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        messagebox.showerror("파일 오류", f"{filename} 파일을 찾을 수 없습니다.")
+        return None
+    except json.JSONDecodeError:
+        messagebox.showerror("파일 오류", f"{filename} 파일의 JSON 형식이 올바르지 않습니다.")
+        return None
 
-WEAPON_DB = {
-    "백야의 별★": ["주요 능력치", "아츠 강도", "고통"],
-    "위대한 이름★": ["주요 능력치", "물리 피해", "잔혹"],
-    "테르밋 커터★": ["의지", "공격력", "흐름"],
-    "부요★": ["주요 능력치", "치확", "어둠"],
-    "끝없는 방랑★": ["의지", "공격력", "흐름"],
-    "장대한 염원★": ["민첩성", "공격력", "고통"],
-    "용조의 불꽃★": ["지능", "공격력", "어둠"],
-    "암흑의 횃불★": ["지능", "열기 피해", "고통"],
-    "강철의 여운": ["민첩성", "물리 피해", "기예"],
-    "숭배의 시선": ["민첩성", "물리 피해", "어둠"],
-    "O.B.J. 엣지 오브 라이트": ["민첩성", "공격력", "흐름"],
-    "십이문": ["민첩성", "공격력", "고통"],
-    "린수를 찾아서 3.0": ["힘", "궁충", "억제"],
-    "불사의 성주": ["지능", "궁충", "사기"],
-    "분쇄의 군주★": ["힘", "치확", "분쇄"],
-    "과거의 일품★": ["의지", "생명력", "효율"],
-    "모범★": ["주요 능력치", "공격력", "억제"],
-    "헤라펜거★": ["힘", "공격력", "방출"],
-    "천둥의 흔적★": ["힘", "생명력", "의료"],
-    "O.B.J. 헤비 버든": ["힘", "생명력", "효율"],
-    "최후의 메아리": ["힘", "생명력", "의료"],
-    "고대의 강줄기": ["힘", "아츠 강도", "잔혹"],
-    "검은 추적자": ["힘", "궁충", "방출"],
-    "J.E.T.★": ["주요 능력치", "공격력", "억제"],
-    "용사★": ["민첩성", "물리 피해", "기예"],
-    "산의 지배자★": ["민첩성", "물리 피해", "효율"],
-    "중심력 ": ["의지", "전기 피해", "억제"],
-    "O.B.J. 스파이크": ["의지", "물리 피해", "고통"],
-    "키메라의 정의": ["힘", "궁충", "잔혹"],
-    "클래니벌★": ["주요 능력치", "아츠 피해", "고통"],
-    "쐐기★": ["주요 능력치", "치확", "고통"],
-    "예술의 폭군★": ["지능", "치확", "골절"],
-    "항로의 개척자★": ["지능", "냉기 피해", "고통"],
-    "이성적인 작별": ["힘", "열기 피해", "추격"],
-    "O.B.J. 벨로시투스": ["민첩성", "궁충", "방출"],
-    "작품: 중생": ["민첩성", "아츠 피해", "고통"],
-    "기사도 정신★": ["의지", "생명력", "의료"],
-    "망각★": ["지능", "아츠 피해", "어둠"],
-    "폭발 유닛★": ["주요 능력치", "아츠 강도", "방출"],
-    "바다와 별의 꿈★": ["지능", "치유 효율", "고통"],
-    "사명의 길★": ["의지", "궁충", "추격"],
-    "작품: 침식 흔적★": ["의지", "자연 피해", "억제"],
-    "O.B.J. 아츠 아이덴티티": ["지능", "아츠 강도", "추격"],
-    "선교의 자유": ["의지", "치유 효율", "의료"],
-    "황무지의 방랑자": ["지능", "전기 피해", "고통"],
-    "무가내하": ["의지", "궁충", "사기"],
-    "망자의 노래": ["지능", "공격력", "어둠"]
-}
+# 데이터베이스 로드
+TARGET_KEYWORDS = load_json('attributes_db.json')
+WEAPON_DB = load_json('weapons_db.json')
+
+# 로드 실패 시 프로그램 종료
+if TARGET_KEYWORDS is None or WEAPON_DB is None:
+    print("❌ 데이터베이스 파일 로드 실패. 프로그램을 종료합니다.")
+    exit(1)
 
 # ✅ 해상도별 프리셋 (base_width x base_height: (start_x, start_y, spacing_x, spacing_y))
 RESOLUTION_PRESETS = {
@@ -821,75 +786,6 @@ def stop_scan_ui():
     auto_scan_enabled = False
     auto_btn.config(text="▶️ 자동 스캔 시작 (F1)", style="TButton")
 
-def manual_adjust_position():
-    """✅ 수동 위치 조정 기능"""
-    def save_adjustment():
-        global first_item_pos, grid_spacing
-        try:
-            x_offset = int(x_entry.get())
-            y_offset = int(y_entry.get())
-            spacing_x = int(spacing_x_entry.get())
-            spacing_y = int(spacing_y_entry.get())
-            
-            # 현재 위치에 오프셋 적용
-            if first_item_pos:
-                first_item_pos = (first_item_pos[0] + x_offset, first_item_pos[1] + y_offset)
-            
-            grid_spacing = (spacing_x, spacing_y)
-            
-            rel_x = first_item_pos[0] - game_window_rect['x']
-            rel_y = first_item_pos[1] - game_window_rect['y']
-            
-            auto_setup_label.config(
-                text=f"✅ 기준점(수동): 창내({rel_x},{rel_y}) / 화면{first_item_pos}",
-                fg="#3498db"
-            )
-            spacing_label.config(
-                text=f"✅ 간격(수동): 가로 {grid_spacing[0]}px, 세로 {grid_spacing[1]}px",
-                fg="#3498db"
-            )
-            
-            adjust_window.destroy()
-            messagebox.showinfo("완료", "위치가 수동으로 조정되었습니다!")
-        except:
-            messagebox.showerror("오류", "올바른 숫자를 입력하세요")
-    
-    adjust_window = tk.Toplevel(root)
-    adjust_window.title("수동 위치 조정")
-    adjust_window.geometry("400x300")
-    
-    tk.Label(adjust_window, text="기준점 오프셋 (현재 위치 기준)", font=("Malgun Gothic", 10, "bold")).pack(pady=10)
-    
-    offset_frame = tk.Frame(adjust_window)
-    offset_frame.pack(pady=5)
-    tk.Label(offset_frame, text="X 오프셋:").grid(row=0, column=0, padx=5)
-    x_entry = tk.Entry(offset_frame, width=10)
-    x_entry.insert(0, "0")
-    x_entry.grid(row=0, column=1, padx=5)
-    
-    tk.Label(offset_frame, text="Y 오프셋:").grid(row=1, column=0, padx=5)
-    y_entry = tk.Entry(offset_frame, width=10)
-    y_entry.insert(0, "0")
-    y_entry.grid(row=1, column=1, padx=5)
-    
-    tk.Label(adjust_window, text="그리드 간격 (픽셀)", font=("Malgun Gothic", 10, "bold")).pack(pady=10)
-    
-    spacing_frame = tk.Frame(adjust_window)
-    spacing_frame.pack(pady=5)
-    tk.Label(spacing_frame, text="가로 간격:").grid(row=0, column=0, padx=5)
-    spacing_x_entry = tk.Entry(spacing_frame, width=10)
-    spacing_x_entry.insert(0, str(grid_spacing[0]))
-    spacing_x_entry.grid(row=0, column=1, padx=5)
-    
-    tk.Label(spacing_frame, text="세로 간격:").grid(row=1, column=0, padx=5)
-    spacing_y_entry = tk.Entry(spacing_frame, width=10)
-    spacing_y_entry.insert(0, str(grid_spacing[1]))
-    spacing_y_entry.grid(row=1, column=1, padx=5)
-    
-    tk.Button(adjust_window, text="적용", command=save_adjustment, bg="#3498db", fg="white").pack(pady=20)
-    tk.Label(adjust_window, text="💡 자동 감지가 정확하지 않을 때 사용하세요", 
-             font=("Malgun Gothic", 8), fg="#7f8c8d").pack()
-
 def on_key_press(key):
     try:
         if key == keyboard.Key.f1: toggle_auto_scan()
@@ -928,10 +824,6 @@ spacing_label.pack(anchor="w")
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
 
-# ✅ 수동 조정 버튼 추가
-manual_btn = ttk.Button(f, text="🔧 수동 위치 조정", command=manual_adjust_position)
-manual_btn.pack(pady=5, fill="x")
-
 status_label = tk.Label(f, text="⏳ 대기 중...", font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1")
 status_label.pack()
 progress_label = tk.Label(f, text="진행: 0/20 | 잠금: 0", bg="#ecf0f1")
@@ -948,7 +840,6 @@ match_label.pack(fill="x")
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
 tk.Label(help_frame, text="• 1920x1080, 1280x768 등 자동 지원", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 자동 감지 실패 시 '수동 위치 조정' 사용", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 
 root.after(100, load_lock_template)

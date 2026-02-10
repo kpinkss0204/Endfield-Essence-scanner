@@ -12,6 +12,7 @@ import win32api
 import win32con
 import win32gui
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
@@ -26,12 +27,27 @@ except:
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ============================================================
+# 리소스 파일 경로 처리 (exe 빌드 대응)
+# ============================================================
+def resource_path(relative_path):
+    """PyInstaller로 빌드된 exe에서 리소스 파일 경로 찾기"""
+    try:
+        # PyInstaller가 생성한 임시 폴더
+        base_path = sys._MEIPASS
+    except Exception:
+        # 일반 Python 실행 시
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
+
+# ============================================================
 # JSON 파일 로드
 # ============================================================
 def load_json(filename):
     """JSON 파일을 읽어서 딕셔너리로 반환"""
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        filepath = resource_path(filename)
+        with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         messagebox.showerror("파일 오류", f"{filename} 파일을 찾을 수 없습니다.")
@@ -52,10 +68,10 @@ if TARGET_KEYWORDS is None or WEAPON_DB is None:
 # ✅ 해상도별 프리셋 (base_width x base_height: (start_x, start_y, spacing_x, spacing_y))
 RESOLUTION_PRESETS = {
     (1280, 768): (82, 97, 105, 110),
-    (1920, 1080): (123, 145, 158, 165),  # 1920/1280 = 1.5배
-    (1600, 900): (102, 121, 131, 137),   # 1600/1280 = 1.25배
-    (2560, 1440): (164, 194, 210, 220),  # 2560/1280 = 2배
-    (1366, 768): (87, 97, 112, 110),     # 1366/1280 = 1.067배
+    (1920, 1080): (123, 145, 158, 165),
+    (1600, 900): (102, 121, 131, 137),
+    (2560, 1440): (164, 194, 210, 220),
+    (1366, 768): (87, 97, 112, 110),
 }
 
 # 전역 변수
@@ -66,7 +82,7 @@ current_scale = 1.0
 lock_button_pos = None
 lock_template = None 
 lock_button_template = None 
-grid_spacing = (105, 110)  # ✅ 동적으로 설정될 간격
+grid_spacing = (105, 110)
 
 GRID_COLS = 4
 GRID_ROWS = 5
@@ -136,7 +152,6 @@ def find_game_window():
             'height': height - title_bar_height - border_width
         }
     
-    # ✅ 스케일 계산
     base_width = 1280
     base_height = 768
     current_scale = game_window_rect['width'] / base_width
@@ -153,7 +168,6 @@ def find_game_window():
     return True
 
 def get_scaled_value(base_value):
-    """단일 값의 스케일 변환"""
     return int(base_value * current_scale)
 
 def click_position(pos):
@@ -169,7 +183,6 @@ def click_position(pos):
     except: return False
 
 def detect_yellow_items():
-    """노란색 아이템 감지 - 그리드 자동 설정용"""
     try:
         if game_window_rect:
             bbox = (
@@ -219,10 +232,14 @@ def is_item_at_position(target_pos, tolerance=None):
 
 def load_lock_template():
     global lock_template, lock_button_template
-    if os.path.exists("lock_template.png"):
-        lock_template = cv2.imread("lock_template.png", cv2.IMREAD_GRAYSCALE)
-    if os.path.exists("lock_button_template.png"):
-        lock_button_template = cv2.imread("lock_button_template.png", cv2.IMREAD_GRAYSCALE)
+    
+    lock_template_path = resource_path("lock_template.png")
+    lock_button_template_path = resource_path("lock_button_template.png")
+    
+    if os.path.exists(lock_template_path):
+        lock_template = cv2.imread(lock_template_path, cv2.IMREAD_GRAYSCALE)
+    if os.path.exists(lock_button_template_path):
+        lock_button_template = cv2.imread(lock_button_template_path, cv2.IMREAD_GRAYSCALE)
     
     if lock_template is not None:
         template_label.config(text="✅ 아이콘 템플릿 로드 완료", fg="#27ae60")
@@ -269,60 +286,29 @@ def find_lock_button():
         return None
     except: return None
 
-# ============================================================
-# ✅ [핵심 수정] 잠금 여부 감지 함수 - 오탐지 문제 해결
-# ============================================================
 def is_item_locked_template(item_pos):
-    """
-    수정된 잠금 아이콘 감지 함수.
-    
-    기존 문제점:
-      1. threshold=0.6 이 너무 낮아 잠금 아이콘이 없는 곳에서도 매칭됨
-      2. search_size=60px 이 너무 작아 아이콘이 살짝 벗어나면 영역을 벗어남
-      3. offset 계산이 부정확해 엉뚱한 위치(인접 아이템 영역 등)를 검색함
-      4. 디버그 로그가 없어 어디를 검색했는지 추적 불가
-    
-    수정 내용:
-      1. threshold 를 0.6 → 0.78 로 상향 (오탐지 방지)
-      2. 검색 영역을 아이템 셀 크기 기반으로 명확하게 제한
-         - 아이템 중심에서 셀 절반 범위 내부만 검색
-         - 인접 아이템 영역과 겹치지 않도록 margin 적용
-      3. 잠금 아이콘의 실제 게임 내 위치(좌하단 코너)에 맞게 offset 보정
-      4. 디버그 로그 추가 (매칭 점수, 검색 영역 좌표 출력)
-    """
     global lock_template
     if lock_template is None:
         return False
     
     try:
-        # ── 1. 아이템 셀 크기 기준으로 검색 영역 계산 ──────────────────
-        # 아이템 그리드 간격의 절반에서 약간의 여백을 뺀 크기로 검색 범위 제한.
-        # 이렇게 하면 인접 아이템의 잠금 아이콘이 섞이는 문제를 원천 차단함.
-        cell_half_w = int(grid_spacing[0] * 0.45)   # 셀 가로 절반 (약간 축소)
-        cell_half_h = int(grid_spacing[1] * 0.45)   # 셀 세로 절반 (약간 축소)
-
-        # ── 2. 잠금 아이콘의 게임 내 실제 위치 오프셋 보정 ─────────────
-        # 엔드필드 인벤토리에서 잠금 아이콘은 아이템 셀의 좌하단에 위치.
-        # 기존 코드: item_pos 기준 x-60, y+20 → 잠금 아이콘이 아닌 다른 영역을 검색하는 경우 있음.
-        # 수정: 아이템 중심(item_pos)에서 셀 크기 비율로 offset 계산.
-        icon_offset_x = -int(grid_spacing[0] * 0.38)  # 아이템 중심 기준 좌측
-        icon_offset_y = int(grid_spacing[1] * 0.25)   # 아이템 중심 기준 하단
+        cell_half_w = int(grid_spacing[0] * 0.45)
+        cell_half_h = int(grid_spacing[1] * 0.45)
+        icon_offset_x = -int(grid_spacing[0] * 0.38)
+        icon_offset_y = int(grid_spacing[1] * 0.25)
 
         icon_center_x = item_pos[0] + icon_offset_x
         icon_center_y = item_pos[1] + icon_offset_y
 
-        # 검색 영역: 아이콘 예상 중심에서 셀 절반 크기만큼만 검색
         search_x1 = icon_center_x - cell_half_w
         search_y1 = icon_center_y - cell_half_h
         search_x2 = icon_center_x + cell_half_w
         search_y2 = icon_center_y + cell_half_h
 
-        # 화면 경계 보정
         search_x1 = max(0, search_x1)
         search_y1 = max(0, search_y1)
         search_bbox = (search_x1, search_y1, search_x2, search_y2)
 
-        # 검색 영역이 너무 작으면 스킵
         if (search_x2 - search_x1) < 10 or (search_y2 - search_y1) < 10:
             print(f"  ⚠️ 검색 영역 너무 작음: {search_bbox}")
             return False
@@ -330,7 +316,6 @@ def is_item_locked_template(item_pos):
         search_img = ImageGrab.grab(bbox=search_bbox)
         search_gray = cv2.cvtColor(np.array(search_img), cv2.COLOR_RGB2GRAY)
 
-        # ── 3. 템플릿 스케일 조정 ─────────────────────────────────────
         if current_scale != 1.0:
             scaled_w = max(1, int(lock_template.shape[1] * current_scale))
             scaled_h = max(1, int(lock_template.shape[0] * current_scale))
@@ -338,7 +323,6 @@ def is_item_locked_template(item_pos):
         else:
             scaled_template = lock_template
 
-        # 템플릿이 검색 영역보다 크면 감지 불가
         if (scaled_template.shape[1] > search_gray.shape[1] or
                 scaled_template.shape[0] > search_gray.shape[0]):
             print(f"  ⚠️ 템플릿({scaled_template.shape[1]}x{scaled_template.shape[0]})이 "
@@ -348,8 +332,7 @@ def is_item_locked_template(item_pos):
         result = cv2.matchTemplate(search_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-        # ── 4. 디버그 로그 ─────────────────────────────────────────────
-        is_locked = max_val >= 0.78  # ✅ threshold 0.6 → 0.78 상향
+        is_locked = max_val >= 0.78
         print(f"  🔎 잠금 감지: 검색영역={search_bbox} | 매칭점수={max_val:.3f} | "
               f"임계값=0.78 | {'🔒 잠금됨' if is_locked else '🔓 잠금안됨'}")
 
@@ -358,7 +341,6 @@ def is_item_locked_template(item_pos):
     except Exception as e:
         print(f"  ❌ 잠금 감지 오류: {str(e)}")
         return False
-
 
 def auto_detect_option_region():
     global scan_region
@@ -411,14 +393,12 @@ def auto_detect_option_region():
     except: pass
 
 def auto_detect_grid():
-    """✅ 개선된 그리드 자동 감지: 실제 노란색 아이템을 찾아서 설정"""
     global first_item_pos, grid_spacing
     
     try:
         status_label.config(text="🔍 아이템 그리드 감지 중...", fg="#f39c12")
         root.update()
         
-        # 1단계: 프리셋 확인
         res_key = (game_window_rect['width'], game_window_rect['height'])
         preset_found = False
         
@@ -432,7 +412,6 @@ def auto_detect_grid():
                 break
         
         if not preset_found:
-            # 2단계: 스케일 기반 계산
             base_start = (82, 97)
             base_spacing = (105, 110)
             
@@ -446,11 +425,9 @@ def auto_detect_grid():
             )
             print(f"✅ 스케일 계산: scale={current_scale:.2f}x")
         
-        # 3단계: 실제 아이템 감지로 검증 및 보정
         detected_items = detect_yellow_items()
         
         if len(detected_items) >= 4:
-            # 왼쪽 상단 영역의 아이템들만 필터링 (화면의 상위 40%, 좌측 60%)
             left_top_items = [
                 item for item in detected_items
                 if item[0] < game_window_rect['x'] + game_window_rect['width'] * 0.6
@@ -458,21 +435,17 @@ def auto_detect_grid():
             ]
             
             if len(left_top_items) >= 4:
-                # 가장 왼쪽 상단 아이템 찾기
                 left_top_items.sort(key=lambda p: p[0] + p[1])
                 detected_first = left_top_items[0]
                 
-                # 감지된 위치와 계산된 위치의 차이 확인
                 diff_x = abs(detected_first[0] - first_item_pos[0])
                 diff_y = abs(detected_first[1] - first_item_pos[1])
                 
-                # 차이가 크면 감지된 위치 사용
                 if diff_x > 20 or diff_y > 20:
                     print(f"⚠️ 계산 위치와 감지 위치 차이 큼: ({diff_x}, {diff_y})")
                     print(f"   계산: {first_item_pos} -> 감지: {detected_first}")
                     first_item_pos = detected_first
                     
-                    # 간격도 실제 아이템들로 재계산
                     sorted_by_x = sorted(left_top_items, key=lambda p: p[0])
                     sorted_by_y = sorted(left_top_items, key=lambda p: p[1])
                     
@@ -492,7 +465,6 @@ def auto_detect_grid():
                 else:
                     print(f"✅ 계산 위치 검증 완료 (오차: {diff_x}, {diff_y})")
         
-        # 상대 좌표 계산 (디버깅용)
         rel_x = first_item_pos[0] - game_window_rect['x']
         rel_y = first_item_pos[1] - game_window_rect['y']
         
@@ -514,7 +486,6 @@ def auto_detect_grid():
         print(f"❌ 그리드 설정 오류: {str(e)}")
 
 def get_item_position(row, col):
-    """그리드 위치로 아이템 좌표 계산"""
     if not first_item_pos: 
         return None
     
@@ -524,7 +495,6 @@ def get_item_position(row, col):
     return (x, y)
 
 def preprocess_image_method1(img):
-    """방법 1: 기본 이진화"""
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     scale = 2 if current_scale < 1.5 else 3
@@ -534,7 +504,6 @@ def preprocess_image_method1(img):
     return Image.fromarray(binary)
 
 def preprocess_image_method2(img):
-    """방법 2: 적응형 이진화"""
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     scale = 2 if current_scale < 1.5 else 3
@@ -546,7 +515,6 @@ def preprocess_image_method2(img):
     return Image.fromarray(binary)
 
 def preprocess_image_method3(img):
-    """방법 3: 대비 강화"""
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     scale = 3
@@ -560,7 +528,6 @@ def preprocess_image_method3(img):
     return Image.fromarray(binary)
 
 def scan_options_parallel(region):
-    """병렬 OCR 처리"""
     try:
         region_key = str(region)
         with cache_lock:
@@ -836,7 +803,6 @@ option_label.pack(fill="x")
 match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w")
 match_label.pack(fill="x")
 
-# ✅ 도움말 추가
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
 tk.Label(help_frame, text="• 1920x1080, 1280x768 등 자동 지원", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")

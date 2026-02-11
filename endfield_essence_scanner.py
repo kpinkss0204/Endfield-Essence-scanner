@@ -90,9 +90,9 @@ GRID_ROWS = 5
 auto_scan_enabled = False
 scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
 
-# ✅ 사용자 설정 가능한 스캔 간격 (초 단위)
-scan_delay_after_click = 0.35  # 아이템 클릭 후 대기 시간
-scan_delay_between_items = 0.25  # 다음 아이템으로 넘어갈 때 대기 시간
+# ✅ 스캔 간격 고정값 (초 단위)
+scan_delay_after_click = 0.55  # 아이템 클릭 후 대기 시간 (고정)
+scan_delay_between_items = 0.30  # 다음 아이템으로 넘어갈 때 대기 시간 (고정)
 
 # ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
 lock_status_cache = {}
@@ -931,19 +931,6 @@ def stop_scan_ui():
     auto_scan_enabled = False
     auto_btn.config(text="▶️ 자동 스캔 시작 (F1)", style="TButton")
 
-# ✅ 슬라이더 값 변경 핸들러
-def update_click_delay(value):
-    global scan_delay_after_click
-    scan_delay_after_click = float(value)
-    click_delay_value_label.config(text=f"{scan_delay_after_click:.2f}초")
-    print(f"⏱️ 클릭 후 대기 시간: {scan_delay_after_click:.2f}초")
-
-def update_item_delay(value):
-    global scan_delay_between_items
-    scan_delay_between_items = float(value)
-    item_delay_value_label.config(text=f"{scan_delay_between_items:.2f}초")
-    print(f"⏱️ 아이템 간 대기 시간: {scan_delay_between_items:.2f}초")
-
 def on_key_press(key):
     try:
         if key == keyboard.Key.f1: toggle_auto_scan()
@@ -953,8 +940,8 @@ def on_key_press(key):
 keyboard.Listener(on_press=on_key_press).start()
 
 root = tk.Tk()
-root.title("Endfield Auto Scanner v7.3 (Adjustable Delay)")
-root.geometry("540x1020")
+root.title("Endfield Auto Scanner v7.3 (Fixed Delay)")
+root.geometry("540x980")
 root.attributes("-topmost", True)
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
@@ -962,7 +949,7 @@ style.configure("Running.TButton", foreground="#e74c3c")
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-tk.Label(f, text="엔드필드 자동 잠금 (간격 조절)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+tk.Label(f, text="엔드필드 자동 잠금 (간격 고정)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
 
 setup_frame = tk.LabelFrame(f, text="📊 상태", bg="white", padx=10, pady=10)
 setup_frame.pack(fill="x", pady=10)
@@ -981,47 +968,25 @@ spacing_label.pack(anchor="w")
 precheck_label = tk.Label(setup_frame, text="사전 확인: 대기", bg="white", fg="#95a5a6")
 precheck_label.pack(anchor="w")
 
-# ✅ 스캔 간격 설정 UI
-delay_frame = tk.LabelFrame(f, text="⏱️ 스캔 간격 설정", bg="white", padx=10, pady=10)
+# ✅ 스캔 간격 표시 (고정값)
+delay_frame = tk.LabelFrame(f, text="⏱️ 스캔 간격 (고정)", bg="white", padx=10, pady=10)
 delay_frame.pack(fill="x", pady=10)
 
-# 클릭 후 대기 시간
-click_delay_frame = tk.Frame(delay_frame, bg="white")
-click_delay_frame.pack(fill="x", pady=5)
-tk.Label(click_delay_frame, text="아이템 클릭 후 대기:", bg="white", width=18, anchor="w").pack(side="left")
-click_delay_value_label = tk.Label(click_delay_frame, text=f"{scan_delay_after_click:.2f}초", bg="white", fg="#3498db", width=8)
-click_delay_value_label.pack(side="left")
-click_delay_slider = tk.Scale(
+tk.Label(
     delay_frame, 
-    from_=0.1, 
-    to=2.0, 
-    resolution=0.05,
-    orient="horizontal",
-    command=update_click_delay,
-    bg="white",
-    highlightthickness=0
-)
-click_delay_slider.set(scan_delay_after_click)
-click_delay_slider.pack(fill="x")
+    text=f"• 아이템 클릭 후 대기: {scan_delay_after_click:.2f}초", 
+    bg="white", 
+    anchor="w",
+    font=("Malgun Gothic", 9)
+).pack(anchor="w", pady=2)
 
-# 아이템 간 대기 시간
-item_delay_frame = tk.Frame(delay_frame, bg="white")
-item_delay_frame.pack(fill="x", pady=5)
-tk.Label(item_delay_frame, text="다음 아이템 대기:", bg="white", width=18, anchor="w").pack(side="left")
-item_delay_value_label = tk.Label(item_delay_frame, text=f"{scan_delay_between_items:.2f}초", bg="white", fg="#3498db", width=8)
-item_delay_value_label.pack(side="left")
-item_delay_slider = tk.Scale(
-    delay_frame,
-    from_=0.1,
-    to=2.0,
-    resolution=0.05,
-    orient="horizontal",
-    command=update_item_delay,
-    bg="white",
-    highlightthickness=0
-)
-item_delay_slider.set(scan_delay_between_items)
-item_delay_slider.pack(fill="x")
+tk.Label(
+    delay_frame, 
+    text=f"• 다음 아이템 대기: {scan_delay_between_items:.2f}초", 
+    bg="white", 
+    anchor="w",
+    font=("Malgun Gothic", 9)
+).pack(anchor="w", pady=2)
 
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
@@ -1041,7 +1006,7 @@ match_label.pack(fill="x")
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
 tk.Label(help_frame, text="• 시작 전 모든 아이템의 잠금 상태 확인", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 스캔 간격을 슬라이더로 조절 가능", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+tk.Label(help_frame, text="• 클릭 후 0.55초, 다음 아이템 0.30초 대기", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 
 root.after(100, load_lock_template)

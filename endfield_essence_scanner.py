@@ -90,6 +90,10 @@ GRID_ROWS = 5
 auto_scan_enabled = False
 scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
 
+# ✅ 사용자 설정 가능한 스캔 간격 (초 단위)
+scan_delay_after_click = 0.35  # 아이템 클릭 후 대기 시간
+scan_delay_between_items = 0.25  # 다음 아이템으로 넘어갈 때 대기 시간
+
 # ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
 lock_status_cache = {}
 
@@ -379,7 +383,18 @@ def auto_detect_option_region():
             if h > w and h > min_height and w < max_width:
                 yellow_bars.append((x, y, w, h))
         
-        if len(yellow_bars) < 1: return
+        if len(yellow_bars) < 1:
+            print("⚠️ 옵션 영역 자동 감지 실패 - 수동 설정 필요")
+            # 기본값 설정 (1280x768 기준)
+            scan_region = (
+                game_window_rect['x'] + get_scaled_value(560),
+                game_window_rect['y'] + get_scaled_value(200),
+                game_window_rect['x'] + get_scaled_value(820),
+                game_window_rect['y'] + get_scaled_value(450)
+            )
+            scan_region_label.config(text=f"⚠️ 기본값 사용: {scan_region}", fg="#f39c12")
+            return
+            
         yellow_bars.sort(key=lambda b: b[1])
         top_3 = yellow_bars[:3]
         
@@ -393,7 +408,17 @@ def auto_detect_option_region():
         
         scan_region = (min_x, min_y, max_x, max_y)
         scan_region_label.config(text=f"✅ 옵션 영역: ({min_x},{min_y}) ~ ({max_x},{max_y})", fg="#27ae60")
-    except: pass
+        print(f"✅ 옵션 영역 감지 성공: {scan_region}")
+    except Exception as e:
+        print(f"❌ 옵션 영역 감지 오류: {str(e)}")
+        # 오류 시 기본값
+        scan_region = (
+            game_window_rect['x'] + get_scaled_value(560),
+            game_window_rect['y'] + get_scaled_value(200),
+            game_window_rect['x'] + get_scaled_value(820),
+            game_window_rect['y'] + get_scaled_value(450)
+        )
+        scan_region_label.config(text=f"⚠️ 기본값 사용 (오류)", fg="#e74c3c")
 
 def auto_detect_grid():
     global first_item_pos, grid_spacing
@@ -600,11 +625,39 @@ def scan_options_parallel(region):
         region_key = str(region)
         with cache_lock:
             if region_key in ocr_cache:
-                cache_time, result = ocr_cache[region_key]
-                if time.time() - cache_time < 1.0:
+                cache_data = ocr_cache[region_key]
+                # 캐시 데이터 구조 체크 (이전 버전 호환)
+                if len(cache_data) == 3:
+                    cache_time, result, cached_text = cache_data
+                elif len(cache_data) == 2:
+                    # 이전 버전 캐시 - 텍스트 정보 없음
+                    cache_time, result = cache_data
+                    cached_text = "(텍스트 정보 없음)"
+                else:
+                    # 잘못된 캐시 - 무시
+                    del ocr_cache[region_key]
+                    cache_time = 0
+                
+                if cache_time > 0 and time.time() - cache_time < 1.0:
+                    print(f"📦 캐시 사용")
+                    if len(cache_data) == 3:
+                        print(f"📄 캐시된 텍스트: {cached_text[:100]}...")
+                    if result:
+                        print(f"✅ 인식: {', '.join(result)}")
+                    else:
+                        print(f"⚠️ 인식된 키워드 없음")
                     return result
         
         img = ImageGrab.grab(bbox=region)
+        
+        # 이미지가 너무 어둡거나 비어있는지 체크
+        img_array = np.array(img)
+        avg_brightness = np.mean(img_array)
+        print(f"📊 이미지 밝기: {avg_brightness:.1f} (정상: 50-200)")
+        
+        if avg_brightness < 10:
+            print(f"⚠️ 이미지가 너무 어두움 - 옵션창이 안열렸을 가능성")
+            return []
         
         preprocessing_methods = [
             preprocess_image_method1,
@@ -631,6 +684,8 @@ def scan_options_parallel(region):
                     all_results.append(clean_text)
                     if idx == 0:
                         print(f"📝 OCR (방법{idx+1}): {clean_text[:80]}")
+                    else:
+                        print(f"📝 OCR (방법{idx+1}): {clean_text[:50]}...")
                 
                 if len(clean_text) > 20:
                     break
@@ -642,8 +697,10 @@ def scan_options_parallel(region):
         combined_text = ' '.join(all_results)
         
         if not combined_text:
-            print(f"❌ OCR 완전 실패")
+            print(f"❌ OCR 완전 실패 - 모든 전처리 방법에서 텍스트 추출 안됨")
             return []
+        
+        print(f"📄 통합 텍스트: {combined_text[:100]}...")
         
         typo_fixes = {
             'atlribute': 'attribute', 'altribute': 'attribute', 
@@ -675,7 +732,7 @@ def scan_options_parallel(region):
             print(f"⚠️ 키워드 매칭 실패 (원본: {combined_text[:50]}...)")
         
         with cache_lock:
-            ocr_cache[region_key] = (time.time(), found_kor)
+            ocr_cache[region_key] = (time.time(), found_kor, combined_text)
             if len(ocr_cache) > 50:
                 oldest = min(ocr_cache.items(), key=lambda x: x[1][0])
                 del ocr_cache[oldest[0]]
@@ -683,6 +740,8 @@ def scan_options_parallel(region):
         return found_kor
     except Exception as e:
         print(f"❌ OCR 오류: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def scan_options():
@@ -739,14 +798,34 @@ def scan_loop():
     
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
     click_position(item_pos)
-    time.sleep(0.3)
     
-    detected_options = scan_options()
+    # ✅ 사용자 설정 대기 시간 적용
+    delay_ms = int(scan_delay_after_click * 1000)
+    print(f"⏱️ 클릭 후 {scan_delay_after_click:.2f}초 대기 중...")
+    time.sleep(scan_delay_after_click)
     
-    if not detected_options:
-        print(f"⚠️ OCR 1차 실패 - 0.2초 후 재시도")
-        time.sleep(0.2)
+    # ✅ OCR 재시도 로직 강화 (최대 3회)
+    detected_options = []
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        if attempt > 0:
+            print(f"🔄 OCR 재시도 {attempt}/{max_retries-1}")
+            time.sleep(0.25)  # 재시도 전 대기
+            
+            # 재시도 시 다시 클릭 (옵션창이 안열렸을 수 있음)
+            if attempt == 2:
+                print(f"   ↻ 아이템 재클릭")
+                click_position(item_pos)
+                time.sleep(scan_delay_after_click)
+        
         detected_options = scan_options()
+        
+        if detected_options:
+            print(f"✅ OCR 성공 ({attempt+1}번째 시도)")
+            break
+        else:
+            print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
     
     if detected_options:
         option_text = ", ".join(detected_options)
@@ -765,13 +844,21 @@ def scan_loop():
                 print(f"🔐 잠금 완료")
                 time.sleep(0.15)
             else:
-                print(f"⚠️ 잠금 버튼 찾기 실패")
+                print(f"⚠️ 잠금 버튼 찾기 실패 - 버튼 재탐색")
+                time.sleep(0.1)
+                btn_pos = find_lock_button()
+                if btn_pos:
+                    click_position(btn_pos)
+                    scan_state["total_locked"] += 1
+                    print(f"🔐 잠금 완료 (재시도)")
+                else:
+                    print(f"❌ 잠금 버튼 찾기 완전 실패")
         else: 
             match_label.config(text="❌ 일치 없음", fg="#95a5a6")
             print(f"❌ 무기 매칭 실패")
     else: 
-        option_label.config(text="❌ OCR 실패 (2회)", fg="#e74c3c")
-        print(f"❌ 옵션 인식 완전 실패")
+        option_label.config(text=f"❌ OCR 실패 ({max_retries}회)", fg="#e74c3c")
+        print(f"❌ 옵션 인식 완전 실패 ({max_retries}회 시도)")
     
     scan_state["total_scanned"] += 1
     scan_state["current_col"] += 1
@@ -780,7 +867,11 @@ def scan_loop():
         scan_state["current_row"] += 1
     
     progress_label.config(text=f"진행: {scan_state['total_scanned']}/20 | 잠금: {scan_state['total_locked']}")
-    root.after(250, scan_loop)
+    
+    # ✅ 사용자 설정 대기 시간 적용
+    next_delay_ms = int(scan_delay_between_items * 1000)
+    print(f"⏱️ 다음 아이템까지 {scan_delay_between_items:.2f}초 대기...")
+    root.after(next_delay_ms, scan_loop)
 
 def toggle_auto_scan():
     global auto_scan_enabled
@@ -840,6 +931,19 @@ def stop_scan_ui():
     auto_scan_enabled = False
     auto_btn.config(text="▶️ 자동 스캔 시작 (F1)", style="TButton")
 
+# ✅ 슬라이더 값 변경 핸들러
+def update_click_delay(value):
+    global scan_delay_after_click
+    scan_delay_after_click = float(value)
+    click_delay_value_label.config(text=f"{scan_delay_after_click:.2f}초")
+    print(f"⏱️ 클릭 후 대기 시간: {scan_delay_after_click:.2f}초")
+
+def update_item_delay(value):
+    global scan_delay_between_items
+    scan_delay_between_items = float(value)
+    item_delay_value_label.config(text=f"{scan_delay_between_items:.2f}초")
+    print(f"⏱️ 아이템 간 대기 시간: {scan_delay_between_items:.2f}초")
+
 def on_key_press(key):
     try:
         if key == keyboard.Key.f1: toggle_auto_scan()
@@ -849,8 +953,8 @@ def on_key_press(key):
 keyboard.Listener(on_press=on_key_press).start()
 
 root = tk.Tk()
-root.title("Endfield Auto Scanner v7.2 (Pre-Check)")
-root.geometry("540x920")
+root.title("Endfield Auto Scanner v7.3 (Adjustable Delay)")
+root.geometry("540x1020")
 root.attributes("-topmost", True)
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
@@ -858,7 +962,7 @@ style.configure("Running.TButton", foreground="#e74c3c")
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-tk.Label(f, text="엔드필드 자동 잠금 (사전 확인)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+tk.Label(f, text="엔드필드 자동 잠금 (간격 조절)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
 
 setup_frame = tk.LabelFrame(f, text="📊 상태", bg="white", padx=10, pady=10)
 setup_frame.pack(fill="x", pady=10)
@@ -874,9 +978,50 @@ auto_setup_label = tk.Label(setup_frame, text="그리드: 대기", bg="white", f
 auto_setup_label.pack(anchor="w")
 spacing_label = tk.Label(setup_frame, text="간격: 대기", bg="white", fg="#95a5a6")
 spacing_label.pack(anchor="w")
-# ✅ 사전 확인 결과 라벨 추가
 precheck_label = tk.Label(setup_frame, text="사전 확인: 대기", bg="white", fg="#95a5a6")
 precheck_label.pack(anchor="w")
+
+# ✅ 스캔 간격 설정 UI
+delay_frame = tk.LabelFrame(f, text="⏱️ 스캔 간격 설정", bg="white", padx=10, pady=10)
+delay_frame.pack(fill="x", pady=10)
+
+# 클릭 후 대기 시간
+click_delay_frame = tk.Frame(delay_frame, bg="white")
+click_delay_frame.pack(fill="x", pady=5)
+tk.Label(click_delay_frame, text="아이템 클릭 후 대기:", bg="white", width=18, anchor="w").pack(side="left")
+click_delay_value_label = tk.Label(click_delay_frame, text=f"{scan_delay_after_click:.2f}초", bg="white", fg="#3498db", width=8)
+click_delay_value_label.pack(side="left")
+click_delay_slider = tk.Scale(
+    delay_frame, 
+    from_=0.1, 
+    to=2.0, 
+    resolution=0.05,
+    orient="horizontal",
+    command=update_click_delay,
+    bg="white",
+    highlightthickness=0
+)
+click_delay_slider.set(scan_delay_after_click)
+click_delay_slider.pack(fill="x")
+
+# 아이템 간 대기 시간
+item_delay_frame = tk.Frame(delay_frame, bg="white")
+item_delay_frame.pack(fill="x", pady=5)
+tk.Label(item_delay_frame, text="다음 아이템 대기:", bg="white", width=18, anchor="w").pack(side="left")
+item_delay_value_label = tk.Label(item_delay_frame, text=f"{scan_delay_between_items:.2f}초", bg="white", fg="#3498db", width=8)
+item_delay_value_label.pack(side="left")
+item_delay_slider = tk.Scale(
+    delay_frame,
+    from_=0.1,
+    to=2.0,
+    resolution=0.05,
+    orient="horizontal",
+    command=update_item_delay,
+    bg="white",
+    highlightthickness=0
+)
+item_delay_slider.set(scan_delay_between_items)
+item_delay_slider.pack(fill="x")
 
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
@@ -896,7 +1041,7 @@ match_label.pack(fill="x")
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
 tk.Label(help_frame, text="• 시작 전 모든 아이템의 잠금 상태 확인", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 1920x1080, 1280x768 등 자동 지원", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+tk.Label(help_frame, text="• 스캔 간격을 슬라이더로 조절 가능", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 
 root.after(100, load_lock_template)

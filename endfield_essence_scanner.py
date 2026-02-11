@@ -149,8 +149,10 @@ def normalize_korean_text(text):
         return None
     
     # ⭐ 3. 긴 단어 우선 매칭 (겹침 방지)
-    # "궁극기 충전 효율" (weapons_db에서 사용)
-    if re.search(r'궁[극국귱]|충[전젼]|효[율률]', clean):
+    # "궁극기 충전 효율" - 모든 키워드가 있어야 매칭
+    if (re.search(r'궁[극국귱]', clean) and 
+        re.search(r'충[전젼]', clean) and 
+        re.search(r'효[율률]', clean)):
         return "궁극기 충전 효율"
     
     # "주요 능력치"
@@ -161,8 +163,8 @@ def normalize_korean_text(text):
     if re.search(r'치[명망]|확[률를]', clean) or re.search(r'^치확$', clean):
         return "치확"
     
-    # "치유 효율"
-    if re.search(r'치[유우]|효[율률]', clean):
+    # "치유 효율" - "치유"와 "효율" 모두 있어야 매칭
+    if re.search(r'치[유우]', clean) and re.search(r'효[율률]', clean):
         return "치유 효율"
     
     # 4. 핵심 스탯 오타 보정
@@ -238,6 +240,7 @@ def normalize_korean_text(text):
         return "사기"
     if re.search(r'의[료로]', clean):
         return "의료"
+    # ⭐ "효율"은 가장 마지막에 체크 (다른 복합어 매칭 후)
     if re.search(r'효[율률]', clean):
         return "효율"
     

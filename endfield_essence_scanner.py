@@ -16,6 +16,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
+from datetime import datetime
 
 # DPI 설정 (윈도우 배율 대응)
 try:
@@ -23,8 +24,37 @@ try:
 except:
     pass
 
-# 테서랙트 경로 (본인의 설치 경로에 맞게 확인 필요)
+# 테서랙트 경로 및 언어 설정
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# ✅ 디버그 이미지 저장 디렉토리
+DEBUG_DIR = "debug_ocr"
+if not os.path.exists(DEBUG_DIR):
+    os.makedirs(DEBUG_DIR)
+    print(f"✅ 디버그 디렉토리 생성: {DEBUG_DIR}")
+
+# ✅ 한국어 OCR 사용 (자동 폴백 기능 포함)
+def check_tesseract_language():
+    """Tesseract 한국어 언어팩 설치 여부 확인"""
+    try:
+        # 테스트 이미지로 한국어 OCR 시도
+        test_img = Image.new('RGB', (100, 30), color='white')
+        pytesseract.image_to_string(test_img, lang='kor', config=r'--psm 6')
+        print("✅ Tesseract 한국어 언어팩 확인 완료")
+        return 'kor', r'--oem 3 --psm 6'  # ← PSM 6으로 변경 (여러 줄 텍스트)
+    except Exception as e:
+        error_msg = str(e)
+        if 'kor' in error_msg or 'language' in error_msg.lower():
+            print("⚠️ 한국어 언어팩 없음 - 영어 모드로 폴백")
+            print("💡 한국어 사용 시: https://github.com/tesseract-ocr/tessdata 에서 kor.traineddata 다운로드")
+            return 'eng', r'--oem 3 --psm 6'
+        else:
+            print(f"⚠️ Tesseract 초기화 오류: {error_msg}")
+            return 'eng', r'--oem 3 --psm 6'
+
+# 언어팩 확인 (프로그램 시작 시 1회)
+TESSERACT_LANG, TESSERACT_CONFIG = check_tesseract_language()
+USE_KOREAN_OCR = (TESSERACT_LANG == 'kor')
 
 # ============================================================
 # 리소스 파일 경로 처리 (exe 빌드 대응)
@@ -56,13 +86,12 @@ def load_json(filename):
         messagebox.showerror("파일 오류", f"{filename} 파일의 JSON 형식이 올바르지 않습니다.")
         return None
 
-# 데이터베이스 로드
-TARGET_KEYWORDS = load_json('attributes_db.json')
+# 무기 데이터베이스 로드
 WEAPON_DB = load_json('weapons_db.json')
 
 # 로드 실패 시 프로그램 종료
-if TARGET_KEYWORDS is None or WEAPON_DB is None:
-    print("❌ 데이터베이스 파일 로드 실패. 프로그램을 종료합니다.")
+if WEAPON_DB is None:
+    print("❌ weapons_db.json 로드 실패. 프로그램을 종료합니다.")
     exit(1)
 
 # ✅ 해상도별 프리셋 (base_width x base_height: (start_x, start_y, spacing_x, spacing_y))
@@ -100,6 +129,188 @@ lock_status_cache = {}
 ocr_executor = ThreadPoolExecutor(max_workers=2)
 ocr_cache = {}
 cache_lock = threading.Lock()
+
+# ============================================================
+# 디버그 이미지 저장 함수
+# ============================================================
+def save_debug_image(original_img, processed_img, position, text_result, korean_ratio):
+    """
+    OCR 디버깅을 위한 이미지 저장
+    
+    Args:
+        original_img: PIL Image - 원본 이미지
+        processed_img: PIL Image - 전처리된 이미지
+        position: tuple - (row, col) 또는 (x, y)
+        text_result: str - OCR 결과 텍스트
+        korean_ratio: float - 한글 비율 (0-100)
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 파일명에 사용할 위치 정보
+        if isinstance(position, tuple) and len(position) == 2:
+            pos_str = f"{position[0]}_{position[1]}"
+        else:
+            pos_str = "unknown"
+        
+        # 텍스트 결과를 파일명에 포함 (특수문자 제거)
+        safe_text = re.sub(r'[^\w\s가-힣]', '', text_result[:20])
+        safe_text = safe_text.replace(' ', '_')
+        
+        # 한글 비율에 따라 접두어 결정
+        if korean_ratio < 50:
+            prefix = "fail"
+        elif korean_ratio < 70:
+            prefix = "warn"
+        else:
+            prefix = "ok"
+        
+        # 원본 이미지 저장
+        original_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_original.png"
+        original_path = os.path.join(DEBUG_DIR, original_filename)
+        original_img.save(original_path)
+        
+        # 전처리 이미지 저장
+        processed_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_processed.png"
+        processed_path = os.path.join(DEBUG_DIR, processed_filename)
+        processed_img.save(processed_path)
+        
+        # 텍스트 결과도 함께 저장
+        text_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_text.txt"
+        text_path = os.path.join(DEBUG_DIR, text_filename)
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(f"위치: {position}\n")
+            f.write(f"타임스탬프: {timestamp}\n")
+            f.write(f"한글 비율: {korean_ratio:.1f}%\n")
+            f.write(f"\n=== OCR 결과 ===\n")
+            f.write(text_result)
+        
+        print(f"💾 디버그 이미지 저장: {original_filename}, {processed_filename}")
+        
+    except Exception as e:
+        print(f"⚠️ 디버그 이미지 저장 실패: {str(e)}")
+
+# ============================================================
+# 한국어 텍스트 보정 함수 (weapons_db.json 기반)
+# ============================================================
+def normalize_korean_text(text):
+    """
+    OCR로 인식된 한국어 텍스트를 정규화하여 weapons_db.json의 옵션과 매칭
+    """
+    import re
+    
+    # 1. 공백 제거 및 한글만 추출
+    clean = re.sub(r'\s+', '', text)
+    clean = re.sub(r'[^\uAC00-\uD7A3]', '', clean)
+    
+    if not clean:
+        return None
+    
+    # 2. 접미사 제거 (증가 관련 오타 모두 처리)
+    clean = re.sub(r'(증가|흐가|쿨가|흐쿨|골흐|콜흐|툴골|즘가|승가|즐|증|가|중)$', '', clean)
+    
+    # 공백 다시 제거
+    clean = re.sub(r'\s+', '', clean)
+    
+    if not clean:
+        return None
+    
+    # ⭐ 3. 긴 단어 우선 매칭 (겹침 방지)
+    # "궁극기 충전 효율" (weapons_db에서 사용)
+    if re.search(r'궁[극국귱]|충[전젼]|효[율률]', clean):
+        return "궁극기 충전 효율"
+    
+    # "주요 능력치"
+    if re.search(r'주[요오]|능[력럭]', clean):
+        return "주요 능력치"
+    
+    # "치명타 확률" → "치확" (weapons_db 표기)
+    if re.search(r'치[명망]|확[률를]', clean) or re.search(r'^치확$', clean):
+        return "치확"
+    
+    # "치유 효율"
+    if re.search(r'치[유우]|효[율률]', clean):
+        return "치유 효율"
+    
+    # 4. 핵심 스탯 오타 보정
+    # "공격력"
+    if re.search(r'걱럭|격턱|공[격걱]|격력|공력|^럭$|^공$|콜굴|콜골|휼콜|드룰', clean):
+        return "공격력"
+    
+    # "생명력"
+    if re.search(r'생[명멍먕]', clean):
+        return "생명력"
+    
+    # "민첩성" (weapons_db 표기)
+    if re.search(r'민[첩접쳡]', clean):
+        return "민첩성"
+    
+    # "지능"
+    if re.search(r'지[능늄]|시능|자능', clean):
+        return "지능"
+    
+    # "의지"
+    if re.search(r'의[지자]|으지|휼|외지|의치', clean):
+        return "의지"
+    
+    # "힘"
+    if re.search(r'^힘$|흐임|그[룹룰옵루]|^[으우]루$|^루$', clean):
+        return "힘"
+    
+    # 5. 아츠 관련
+    # "아츠 강도"
+    if re.search(r'아[츠즈측].*강[도돠]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'강[도돠]', clean)):
+        return "아츠 강도"
+    
+    # "아츠 피해"
+    if re.search(r'아[츠즈측].*피[해혜]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'피[해혜]', clean)):
+        return "아츠 피해"
+    
+    # 6. 속성 피해
+    if re.search(r'물[리이]|그리', clean) and re.search(r'피[해혜]', clean):
+        return "물리 피해"
+    if re.search(r'냉[기기]', clean) and re.search(r'피[해혜]', clean):
+        return "냉기 피해"
+    if re.search(r'열[기이]', clean) and re.search(r'피[해혜]', clean):
+        return "열기 피해"
+    if re.search(r'전[기이]', clean) and re.search(r'피[해혜]', clean):
+        return "전기 피해"
+    if re.search(r'자[연현]', clean) and re.search(r'피[해혜]', clean):
+        return "자연 피해"
+    
+    # 7. 서브 옵션 (weapons_db 기준)
+    if re.search(r'방[출줄쥴]|밤출', clean):
+        return "방출"
+    if re.search(r'흐[름륾]|으름', clean):
+        return "흐름"
+    if re.search(r'고[통충동]', clean):
+        return "고통"
+    if re.search(r'^어[둠눔롬놈돔룸듬]$|^[어엄움]$', clean):
+        return "어둠"
+    if re.search(r'강[공곡골콜쿠쿨]', clean):
+        return "강공"
+    if re.search(r'억[제재]', clean):
+        return "억제"
+    if re.search(r'잔[혹흑]', clean):
+        return "잔혹"
+    if re.search(r'추[격굑]', clean):
+        return "추격"
+    if re.search(r'기[예얘]', clean):
+        return "기예"
+    if re.search(r'골[절졀]', clean):
+        return "골절"
+    if re.search(r'분[쇄쉐]', clean):
+        return "분쇄"
+    if re.search(r'사[기귀]', clean):
+        return "사기"
+    if re.search(r'의[료로]', clean):
+        return "의료"
+    if re.search(r'효[율률]', clean):
+        return "효율"
+    
+    # 8. 매칭 실패 시 None 반환
+    print(f"   ⚠️ 매칭 실패: '{clean}' (원본: {text[:30]})")
+    return None
 
 def find_game_window():
     """게임 창을 찾아서 영역 반환"""
@@ -181,13 +392,23 @@ def click_position(pos):
     if not pos: return False
     x, y = pos
     try:
+        # 1. 마우스 이동
         win32api.SetCursorPos((x, y))
-        time.sleep(0.02)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
-        time.sleep(0.02)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
+        time.sleep(0.1)  # 이동 후 대기 시간 증가
+        
+        # 2. 클릭 다운
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)  # 다운 유지 시간 증가
+        
+        # 3. 클릭 업
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.05)  # 업 후 대기
+        
+        print(f"   🖱️ 클릭 완료: ({x}, {y})")
         return True
-    except: return False
+    except Exception as e:
+        print(f"   ❌ 클릭 실패: {str(e)}")
+        return False
 
 def detect_yellow_items():
     try:
@@ -256,6 +477,12 @@ def load_lock_template():
         lock_btn_label.config(text="✅ 버튼 템플릿 로드 완료", fg="#27ae60")
     else:
         lock_btn_label.config(text="❌ lock_button_template.png 없음", fg="#e74c3c")
+    
+    # OCR 모드 표시
+    if USE_KOREAN_OCR:
+        ocr_mode_label.config(text="✅ OCR 모드: 한국어 (kor)", fg="#27ae60")
+    else:
+        ocr_mode_label.config(text="⚠️ OCR 모드: 영어 (eng) - 폴백", fg="#f39c12")
 
 def find_lock_button():
     global lock_button_template
@@ -587,29 +814,16 @@ def pre_scan_all_locks():
     
     return total_items, locked_items
 
-def preprocess_image_method1(img):
+# ============================================================
+# 이미지 전처리 함수 (CLAHE 방식)
+# ============================================================
+def preprocess_image_clahe(img):
+    """
+    CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    """
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
-    scale = 2 if current_scale < 1.5 else 3
-    resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    inverted = cv2.bitwise_not(resized)
-    _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return Image.fromarray(binary)
-
-def preprocess_image_method2(img):
-    img_array = np.array(img)
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
-    scale = 2 if current_scale < 1.5 else 3
-    resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     
-    inverted = cv2.bitwise_not(resized)
-    binary = cv2.adaptiveThreshold(inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY, 11, 2)
-    return Image.fromarray(binary)
-
-def preprocess_image_method3(img):
-    img_array = np.array(img)
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     scale = 3
     resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     
@@ -620,21 +834,18 @@ def preprocess_image_method3(img):
     
     return Image.fromarray(binary)
 
-def scan_options_parallel(region):
+def scan_options_parallel(region, position=None):
     try:
         region_key = str(region)
         with cache_lock:
             if region_key in ocr_cache:
                 cache_data = ocr_cache[region_key]
-                # 캐시 데이터 구조 체크 (이전 버전 호환)
                 if len(cache_data) == 3:
                     cache_time, result, cached_text = cache_data
                 elif len(cache_data) == 2:
-                    # 이전 버전 캐시 - 텍스트 정보 없음
                     cache_time, result = cache_data
                     cached_text = "(텍스트 정보 없음)"
                 else:
-                    # 잘못된 캐시 - 무시
                     del ocr_cache[region_key]
                     cache_time = 0
                 
@@ -650,105 +861,120 @@ def scan_options_parallel(region):
         
         img = ImageGrab.grab(bbox=region)
         
-        # 이미지가 너무 어둡거나 비어있는지 체크
+        # 이미지 밝기 체크
         img_array = np.array(img)
         avg_brightness = np.mean(img_array)
-        print(f"📊 이미지 밝기: {avg_brightness:.1f} (정상: 50-200)")
+        print(f"📊 이미지 밝기: {avg_brightness:.1f}")
         
         if avg_brightness < 10:
             print(f"⚠️ 이미지가 너무 어두움 - 옵션창이 안열렸을 가능성")
             return []
         
-        preprocessing_methods = [
-            preprocess_image_method1,
-            preprocess_image_method2,
-            preprocess_image_method3
-        ]
+        found_keywords = []
         
-        all_results = []
+        # 한글 OCR (CLAHE 전처리)
+        print(f"🔤 한글 OCR (CLAHE 전처리)")
         
-        for idx, preprocess_func in enumerate(preprocessing_methods):
-            try:
-                processed_img = preprocess_func(img)
+        try:
+            processed_img = preprocess_image_clahe(img)
+            
+            # 한국어 OCR 실행
+            text = pytesseract.image_to_string(
+                processed_img, 
+                lang=TESSERACT_LANG,
+                config=TESSERACT_CONFIG
+            )
+            
+            korean_chars = 0
+            total_chars = 0
+            quality_score = 0
+            
+            if text.strip():
+                korean_chars = len(re.findall(r'[\uAC00-\uD7A3]', text))
+                total_chars = len(re.sub(r'\s', '', text))
+                quality_score = korean_chars / max(total_chars, 1) * 100
                 
-                text = pytesseract.image_to_string(
-                    processed_img, 
-                    lang="eng", 
-                    config=r'--oem 3 --psm 6'
-                )
+                print(f"📝 한글비율: {quality_score:.0f}% | 텍스트: {text[:50]}")
                 
-                clean_text = re.sub(r'[^a-zA-Z\s]', ' ', text).lower()
-                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                # ✅ 디버그 이미지 저장 조건
+                # 1. 한글 비율이 50% 미만일 때
+                # 2. position이 제공되었을 때만
+                if quality_score < 50 and position is not None:
+                    save_debug_image(img, processed_img, position, text, quality_score)
                 
-                if clean_text:
-                    all_results.append(clean_text)
-                    if idx == 0:
-                        print(f"📝 OCR (방법{idx+1}): {clean_text[:80]}")
-                    else:
-                        print(f"📝 OCR (방법{idx+1}): {clean_text[:50]}...")
+                # ✅ 줄 단위로 분리하여 각각 정규화
+                lines = text.split('\n')
                 
-                if len(clean_text) > 20:
-                    break
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
                     
-            except Exception as e:
-                print(f"⚠️ 전처리 방법 {idx+1} 실패: {str(e)}")
-                continue
+                    print(f"   📋 처리 중인 줄: '{line}'")
+                    normalized = normalize_korean_text(line)
+                    if normalized:
+                        if normalized not in found_keywords:
+                            found_keywords.append(normalized)
+                            print(f"      ✅ 추가됨: '{normalized}'")
+                        else:
+                            print(f"      ⏭️ 이미 있음: '{normalized}'")
+                
+                if found_keywords:
+                    print(f"   ✅ 정규화: {', '.join(found_keywords)}")
+            else:
+                print(f"📝 인식 실패 (빈 텍스트)")
+                # 빈 텍스트도 디버그 이미지 저장
+                if position is not None:
+                    save_debug_image(img, processed_img, position, "(빈 텍스트)", 0)
+                
+        except Exception as e:
+            print(f"⚠️ OCR 실패: {str(e)}")
         
-        combined_text = ' '.join(all_results)
-        
-        if not combined_text:
-            print(f"❌ OCR 완전 실패 - 모든 전처리 방법에서 텍스트 추출 안됨")
+        # ===== 결과 처리 =====
+        if not found_keywords:
+            print(f"❌ OCR 완전 실패 - 인식된 키워드 없음")
             return []
         
-        print(f"📄 통합 텍스트: {combined_text[:100]}...")
+        # 중복 제거 (순서 유지)
+        found_keywords = list(dict.fromkeys(found_keywords))
         
-        typo_fixes = {
-            'atlribute': 'attribute', 'altribute': 'attribute', 
-            'atribute': 'attribute', 'criticai': 'critical', 
-            'rale': 'rate', 'intensily': 'intensity',
-            'dmq': 'dmg', 'heai': 'heat'
-        }
-        for typo, correct in typo_fixes.items(): 
-            combined_text = combined_text.replace(typo, correct)
+        print(f"✅ 최종 인식: {', '.join(found_keywords)}")
         
-        found_kor = []
-        found_raw = []
-        sorted_keys = sorted(TARGET_KEYWORDS.keys(), key=len, reverse=True)
-        
-        for eng in sorted_keys:
-            if eng in found_raw: continue
-            if ' ' in eng:
-                if eng in combined_text:
-                    found_kor.append(TARGET_KEYWORDS[eng])
-                    found_raw.append(eng)
-            else:
-                if re.search(r'\b' + re.escape(eng) + r'\b', combined_text):
-                    found_kor.append(TARGET_KEYWORDS[eng])
-                    found_raw.append(eng)
-        
-        if found_raw:
-            print(f"✅ 인식: {', '.join(found_raw)}")
-        else:
-            print(f"⚠️ 키워드 매칭 실패 (원본: {combined_text[:50]}...)")
-        
+        # 캐시 저장
         with cache_lock:
-            ocr_cache[region_key] = (time.time(), found_kor, combined_text)
+            ocr_cache[region_key] = (time.time(), found_keywords, "")
             if len(ocr_cache) > 50:
                 oldest = min(ocr_cache.items(), key=lambda x: x[1][0])
                 del ocr_cache[oldest[0]]
         
-        return found_kor
+        return found_keywords
     except Exception as e:
         print(f"❌ OCR 오류: {str(e)}")
         import traceback
         traceback.print_exc()
         return []
 
-def scan_options():
-    return scan_options_parallel(scan_region)
+def scan_options(position=None):
+    return scan_options_parallel(scan_region, position)
 
 def check_weapon_match(options):
-    return [name for name, req in WEAPON_DB.items() if all(opt in options for opt in req)]
+    """
+    인식된 한글 옵션들과 무기 DB를 비교하여 매칭되는 무기 반환
+    options: ["주요능력치", "공격력", "억제"] 형태의 한글 리스트
+    """
+    matched_weapons = []
+    
+    for name, req_opts in WEAPON_DB.items():
+        # _comment로 시작하는 키는 건너뛰기
+        if name.startswith('_comment'):
+            continue
+        
+        # 무기가 요구하는 모든 옵션이 인식된 옵션에 포함되어 있는지 확인
+        if all(opt in options for opt in req_opts):
+            matched_weapons.append(name)
+            print(f"   🎯 매칭: {name} (필요: {', '.join(req_opts)})")
+    
+    return matched_weapons
 
 def scan_loop():
     global auto_scan_enabled, scan_state
@@ -799,6 +1025,16 @@ def scan_loop():
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
     click_position(item_pos)
     
+    # ✅ 클릭 후 잠시 대기 (클릭이 확실히 처리되도록)
+    time.sleep(0.2)
+    
+    # ✅ 클릭 후 마우스를 (0, 0)으로 이동 (옵션창 가리지 않도록)
+    try:
+        win32api.SetCursorPos((0, 0))
+        print(f"🖱️ 마우스를 (0, 0)으로 이동")
+    except:
+        pass
+    
     # ✅ 사용자 설정 대기 시간 적용
     delay_ms = int(scan_delay_after_click * 1000)
     print(f"⏱️ 클릭 후 {scan_delay_after_click:.2f}초 대기 중...")
@@ -814,18 +1050,36 @@ def scan_loop():
             time.sleep(0.25)  # 재시도 전 대기
             
             # 재시도 시 다시 클릭 (옵션창이 안열렸을 수 있음)
-            if attempt == 2:
+            if attempt >= 1:
                 print(f"   ↻ 아이템 재클릭")
                 click_position(item_pos)
+                
+                # 재클릭 후 대기
+                time.sleep(0.2)
+                
+                # 재클릭 후에도 마우스 이동
+                try:
+                    win32api.SetCursorPos((0, 0))
+                    print(f"   🖱️ 마우스를 (0, 0)으로 이동")
+                except:
+                    pass
+                
                 time.sleep(scan_delay_after_click)
         
-        detected_options = scan_options()
+        # ✅ position 정보를 전달하여 디버그 이미지 저장 가능하게 함
+        detected_options = scan_options(position=(row, col))
         
         if detected_options:
             print(f"✅ OCR 성공 ({attempt+1}번째 시도)")
             break
         else:
             print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
+            
+            # 한글 비율이 너무 낮으면 옵션창이 닫혔거나 다른 화면
+            # 조기 종료하여 불필요한 재시도 방지
+            if attempt == 0:
+                # 첫 시도 실패 시 즉시 재클릭
+                continue
     
     if detected_options:
         option_text = ", ".join(detected_options)
@@ -940,7 +1194,7 @@ def on_key_press(key):
 keyboard.Listener(on_press=on_key_press).start()
 
 root = tk.Tk()
-root.title("Endfield Auto Scanner v7.3 (Fixed Delay)")
+root.title("Endfield Auto Scanner v8.0 DEBUG")
 root.geometry("540x980")
 root.attributes("-topmost", True)
 style = ttk.Style()
@@ -949,7 +1203,7 @@ style.configure("Running.TButton", foreground="#e74c3c")
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-tk.Label(f, text="엔드필드 자동 잠금 (간격 고정)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+tk.Label(f, text="엔드필드 자동 잠금 (디버그)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
 
 setup_frame = tk.LabelFrame(f, text="📊 상태", bg="white", padx=10, pady=10)
 setup_frame.pack(fill="x", pady=10)
@@ -959,6 +1213,9 @@ template_label = tk.Label(setup_frame, text="템플릿 로딩 중...", bg="white
 template_label.pack(anchor="w")
 lock_btn_label = tk.Label(setup_frame, text="버튼 템플릿 로딩 중...", bg="white", fg="#95a5a6")
 lock_btn_label.pack(anchor="w")
+# OCR 모드 표시 라벨 추가
+ocr_mode_label = tk.Label(setup_frame, text="OCR 모드: 확인 중...", bg="white", fg="#95a5a6")
+ocr_mode_label.pack(anchor="w")
 scan_region_label = tk.Label(setup_frame, text="옵션 영역: 대기", bg="white", fg="#95a5a6")
 scan_region_label.pack(anchor="w")
 auto_setup_label = tk.Label(setup_frame, text="그리드: 대기", bg="white", fg="#95a5a6")
@@ -988,6 +1245,16 @@ tk.Label(
     font=("Malgun Gothic", 9)
 ).pack(anchor="w", pady=2)
 
+# 디버그 정보 표시
+tk.Label(
+    delay_frame, 
+    text=f"• 디버그 이미지 저장: {DEBUG_DIR}/", 
+    bg="white", 
+    anchor="w",
+    font=("Malgun Gothic", 9),
+    fg="#e67e22"
+).pack(anchor="w", pady=2)
+
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
 
@@ -1005,8 +1272,9 @@ match_label.pack(fill="x")
 
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
-tk.Label(help_frame, text="• 시작 전 모든 아이템의 잠금 상태 확인", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 클릭 후 0.55초, 다음 아이템 0.30초 대기", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+tk.Label(help_frame, text="• v8.0 DEBUG: OCR 실패 시 이미지 자동 저장", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+tk.Label(help_frame, text="• 한글 비율 50% 미만 시 디버그 이미지 생성", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+tk.Label(help_frame, text="• 저장 위치: debug_ocr/ 폴더", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 
 root.after(100, load_lock_template)

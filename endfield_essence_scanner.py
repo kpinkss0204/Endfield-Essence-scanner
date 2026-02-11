@@ -107,7 +107,7 @@ lock_button_template = None
 grid_spacing = (105, 110)
 
 GRID_COLS = 4
-GRID_ROWS = 5
+GRID_ROWS = 6
 
 auto_scan_enabled = False
 scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
@@ -690,7 +690,7 @@ def pre_scan_all_locks():
             else:
                 print(f"🔓 [{row},{col}] 잠금 안됨")
             
-            progress_label.config(text=f"사전 확인: {total_items}/20 | 잠금: {locked_items}")
+            progress_label.config(text=f"사전 확인: {total_items}/24 | 잠금: {locked_items}")
             root.update()
             
             time.sleep(0.05)
@@ -891,7 +891,7 @@ def scan_loop():
             scan_state["current_col"] = 0
             scan_state["current_row"] += 1
         
-        progress_label.config(text=f"진행: {scan_state['total_scanned']}/20 | 잠금: {scan_state['total_locked']}")
+        progress_label.config(text=f"진행: {scan_state['total_scanned']}/24 | 잠금: {scan_state['total_locked']}")
         root.after(200, scan_loop)
         return
     
@@ -988,7 +988,7 @@ def scan_loop():
         scan_state["current_col"] = 0
         scan_state["current_row"] += 1
     
-    progress_label.config(text=f"진행: {scan_state['total_scanned']}/20 | 잠금: {scan_state['total_locked']}")
+    progress_label.config(text=f"진행: {scan_state['total_scanned']}/24 | 잠금: {scan_state['total_locked']}")
     
     next_delay_ms = int(scan_delay_between_items * 1000)
     print(f"⏱️ 다음 아이템까지 {scan_delay_between_items:.2f}초 대기...")
@@ -1081,7 +1081,7 @@ status_label = tk.Label(f, text="⏳ 대기 중...", font=("Malgun Gothic", 12, 
 status_label.pack(pady=(10, 5))
 
 # 진행 라벨
-progress_label = tk.Label(f, text="진행: 0/20 | 잠금: 0", font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
+progress_label = tk.Label(f, text="진행: 0/24 | 잠금: 0", font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
 progress_label.pack(pady=5)
 
 # 실시간 결과 프레임

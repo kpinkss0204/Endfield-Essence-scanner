@@ -90,6 +90,9 @@ GRID_ROWS = 5
 auto_scan_enabled = False
 scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
 
+# ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
+lock_status_cache = {}
+
 ocr_executor = ThreadPoolExecutor(max_workers=2)
 ocr_cache = {}
 cache_lock = threading.Lock()
@@ -494,6 +497,71 @@ def get_item_position(row, col):
     
     return (x, y)
 
+# ✅ 새로운 함수: 전체 그리드 잠금 상태 사전 스캔
+def pre_scan_all_locks():
+    """모든 아이템의 잠금 상태를 미리 확인"""
+    global lock_status_cache
+    lock_status_cache.clear()
+    
+    print("\n" + "="*60)
+    print("🔍 전체 그리드 잠금 상태 사전 스캔 시작")
+    print("="*60)
+    
+    status_label.config(text="🔍 잠금 상태 확인 중...", fg="#f39c12")
+    root.update()
+    
+    total_items = 0
+    locked_items = 0
+    
+    for row in range(GRID_ROWS):
+        for col in range(GRID_COLS):
+            item_pos = get_item_position(row, col)
+            
+            # 아이템 존재 여부 확인
+            if not is_item_at_position(item_pos):
+                print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
+                lock_status_cache[(row, col)] = "empty"
+                # 빈 슬롯 발견 시 스캔 종료
+                status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금됨)", fg="#2ecc71")
+                precheck_label.config(
+                    text=f"✅ 사전 확인: {total_items}개 중 {locked_items}개 잠금됨",
+                    fg="#27ae60"
+                )
+                return total_items, locked_items
+            
+            total_items += 1
+            
+            # 잠금 상태 확인
+            is_locked = is_item_locked_template(item_pos)
+            lock_status_cache[(row, col)] = "locked" if is_locked else "unlocked"
+            
+            if is_locked:
+                locked_items += 1
+                print(f"🔒 [{row},{col}] 잠금됨")
+            else:
+                print(f"🔓 [{row},{col}] 잠금 안됨")
+            
+            # UI 업데이트
+            progress_label.config(
+                text=f"사전 확인: {total_items}/20 | 잠금: {locked_items}"
+            )
+            root.update()
+            
+            # 약간의 딜레이 (안정성)
+            time.sleep(0.05)
+    
+    status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금됨)", fg="#2ecc71")
+    precheck_label.config(
+        text=f"✅ 사전 확인: {total_items}개 중 {locked_items}개 잠금됨",
+        fg="#27ae60"
+    )
+    
+    print("\n" + "="*60)
+    print(f"✅ 사전 스캔 완료: 총 {total_items}개 중 {locked_items}개 잠금됨")
+    print("="*60 + "\n")
+    
+    return total_items, locked_items
+
 def preprocess_image_method1(img):
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
@@ -638,14 +706,17 @@ def scan_loop():
     print(f"\n{'='*50}")
     print(f"🔍 [{row},{col}] 스캔 중 - 위치: {item_pos}")
     
-    if not is_item_at_position(item_pos):
-        print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
+    # ✅ 사전 스캔 결과 확인
+    cache_status = lock_status_cache.get((row, col), None)
+    
+    if cache_status == "empty":
+        print(f"⚠️ [{row},{col}] 빈 슬롯 (사전 확인됨) - 스캔 종료")
         status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
         stop_scan_ui()
         return
     
-    if is_item_locked_template(item_pos):
-        print(f"🔒 [{row},{col}] 이미 잠금됨 - 건너뜀")
+    if cache_status == "locked":
+        print(f"🔒 [{row},{col}] 이미 잠금됨 (사전 확인됨) - 건너뜀")
         match_label.config(text="🔒 이미 잠금됨", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금)", fg="#95a5a6")
         
@@ -657,6 +728,13 @@ def scan_loop():
         
         progress_label.config(text=f"진행: {scan_state['total_scanned']}/20 | 잠금: {scan_state['total_locked']}")
         root.after(200, scan_loop)
+        return
+    
+    # 실시간 아이템 존재 확인 (이중 체크)
+    if not is_item_at_position(item_pos):
+        print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
+        status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
+        stop_scan_ui()
         return
     
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
@@ -739,6 +817,15 @@ def toggle_auto_scan():
     auto_detect_grid()
     
     if scan_region and first_item_pos:
+        # ✅ 사전 스캔 실행
+        total, locked = pre_scan_all_locks()
+        
+        # 잠금 가능한 아이템이 없으면 종료
+        if total == locked:
+            status_label.config(text="✅ 모든 아이템이 이미 잠금됨", fg="#2ecc71")
+            messagebox.showinfo("스캔 완료", f"모든 아이템({total}개)이 이미 잠금되어 있습니다.")
+            return
+        
         auto_scan_enabled = True
         scan_state.update({"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0})
         auto_btn.config(text="⏸️ 스캔 중지 (F1/F2)", style="Running.TButton")
@@ -762,8 +849,8 @@ def on_key_press(key):
 keyboard.Listener(on_press=on_key_press).start()
 
 root = tk.Tk()
-root.title("Endfield Auto Scanner v7.1 (Lock Fix)")
-root.geometry("540x880")
+root.title("Endfield Auto Scanner v7.2 (Pre-Check)")
+root.geometry("540x920")
 root.attributes("-topmost", True)
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
@@ -771,7 +858,7 @@ style.configure("Running.TButton", foreground="#e74c3c")
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-tk.Label(f, text="엔드필드 자동 잠금 (다중 해상도)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+tk.Label(f, text="엔드필드 자동 잠금 (사전 확인)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
 
 setup_frame = tk.LabelFrame(f, text="📊 상태", bg="white", padx=10, pady=10)
 setup_frame.pack(fill="x", pady=10)
@@ -787,6 +874,9 @@ auto_setup_label = tk.Label(setup_frame, text="그리드: 대기", bg="white", f
 auto_setup_label.pack(anchor="w")
 spacing_label = tk.Label(setup_frame, text="간격: 대기", bg="white", fg="#95a5a6")
 spacing_label.pack(anchor="w")
+# ✅ 사전 확인 결과 라벨 추가
+precheck_label = tk.Label(setup_frame, text="사전 확인: 대기", bg="white", fg="#95a5a6")
+precheck_label.pack(anchor="w")
 
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
@@ -805,6 +895,7 @@ match_label.pack(fill="x")
 
 help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
 help_frame.pack(fill="x", pady=5)
+tk.Label(help_frame, text="• 시작 전 모든 아이템의 잠금 상태 확인", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• 1920x1080, 1280x768 등 자동 지원", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
 

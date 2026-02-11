@@ -3,16 +3,19 @@
 block_cipher = None
 
 a = Analysis(
-    ['endfield_essence_scanner.py'],
+    ['endfield_essence_scanner.py'],  # ← 실제 Python 파일명에 맞게 수정하세요
     pathex=[],
     binaries=[],
     datas=[
-        ('attributes_db.json', '.'),
-        ('weapons_db.json', '.'),
-        ('lock_template.png', '.'),
-        ('lock_button_template.png', '.')
+        ('weapons_db.json', '.'),           # 무기 데이터베이스
+        ('lock_template.png', '.'),         # 잠금 아이콘 템플릿
+        ('lock_button_template.png', '.')   # 잠금 버튼 템플릿
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        'PIL._tkinter_finder',  # PIL/Pillow Tkinter 호환성
+        'pynput.keyboard._win32',
+        'pynput.mouse._win32'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -39,11 +42,11 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # False로 바꾸면 콘솔창 숨김
+    console=False,  # True: 콘솔창 표시 (디버깅용) / False: 콘솔창 숨김 (배포용)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None  # 아이콘 파일 있으면 경로 지정
+    icon=None  # 아이콘 파일 있으면: icon='icon.ico'
 )

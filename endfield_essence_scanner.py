@@ -16,7 +16,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
-from datetime import datetime
 
 # DPI 설정 (윈도우 배율 대응)
 try:
@@ -27,12 +26,6 @@ except:
 # 테서랙트 경로 및 언어 설정
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# ✅ 디버그 이미지 저장 디렉토리
-DEBUG_DIR = "debug_ocr"
-if not os.path.exists(DEBUG_DIR):
-    os.makedirs(DEBUG_DIR)
-    print(f"✅ 디버그 디렉토리 생성: {DEBUG_DIR}")
-
 # ✅ 한국어 OCR 사용 (자동 폴백 기능 포함)
 def check_tesseract_language():
     """Tesseract 한국어 언어팩 설치 여부 확인"""
@@ -41,7 +34,7 @@ def check_tesseract_language():
         test_img = Image.new('RGB', (100, 30), color='white')
         pytesseract.image_to_string(test_img, lang='kor', config=r'--psm 6')
         print("✅ Tesseract 한국어 언어팩 확인 완료")
-        return 'kor', r'--oem 3 --psm 6'  # ← PSM 6으로 변경 (여러 줄 텍스트)
+        return 'kor', r'--oem 3 --psm 6'
     except Exception as e:
         error_msg = str(e)
         if 'kor' in error_msg or 'language' in error_msg.lower():
@@ -129,66 +122,6 @@ lock_status_cache = {}
 ocr_executor = ThreadPoolExecutor(max_workers=2)
 ocr_cache = {}
 cache_lock = threading.Lock()
-
-# ============================================================
-# 디버그 이미지 저장 함수
-# ============================================================
-def save_debug_image(original_img, processed_img, position, text_result, korean_ratio):
-    """
-    OCR 디버깅을 위한 이미지 저장
-    
-    Args:
-        original_img: PIL Image - 원본 이미지
-        processed_img: PIL Image - 전처리된 이미지
-        position: tuple - (row, col) 또는 (x, y)
-        text_result: str - OCR 결과 텍스트
-        korean_ratio: float - 한글 비율 (0-100)
-    """
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # 파일명에 사용할 위치 정보
-        if isinstance(position, tuple) and len(position) == 2:
-            pos_str = f"{position[0]}_{position[1]}"
-        else:
-            pos_str = "unknown"
-        
-        # 텍스트 결과를 파일명에 포함 (특수문자 제거)
-        safe_text = re.sub(r'[^\w\s가-힣]', '', text_result[:20])
-        safe_text = safe_text.replace(' ', '_')
-        
-        # 한글 비율에 따라 접두어 결정
-        if korean_ratio < 50:
-            prefix = "fail"
-        elif korean_ratio < 70:
-            prefix = "warn"
-        else:
-            prefix = "ok"
-        
-        # 원본 이미지 저장
-        original_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_original.png"
-        original_path = os.path.join(DEBUG_DIR, original_filename)
-        original_img.save(original_path)
-        
-        # 전처리 이미지 저장
-        processed_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_processed.png"
-        processed_path = os.path.join(DEBUG_DIR, processed_filename)
-        processed_img.save(processed_path)
-        
-        # 텍스트 결과도 함께 저장
-        text_filename = f"{prefix}_{pos_str}_{timestamp}_kr{int(korean_ratio)}_text.txt"
-        text_path = os.path.join(DEBUG_DIR, text_filename)
-        with open(text_path, 'w', encoding='utf-8') as f:
-            f.write(f"위치: {position}\n")
-            f.write(f"타임스탬프: {timestamp}\n")
-            f.write(f"한글 비율: {korean_ratio:.1f}%\n")
-            f.write(f"\n=== OCR 결과 ===\n")
-            f.write(text_result)
-        
-        print(f"💾 디버그 이미지 저장: {original_filename}, {processed_filename}")
-        
-    except Exception as e:
-        print(f"⚠️ 디버그 이미지 저장 실패: {str(e)}")
 
 # ============================================================
 # 한국어 텍스트 보정 함수 (weapons_db.json 기반)
@@ -334,8 +267,7 @@ def find_game_window():
     print(f"📊 총 {len(windows)}개의 게임 창 발견")
     
     if not windows:
-        game_window_label.config(text="❌ 게임 창을 찾을 수 없습니다", fg="#e74c3c")
-        status_label.config(text="💡 게임을 먼저 실행하세요", fg="#f39c12")
+        status_label.config(text="❌ 게임 창을 찾을 수 없습니다", fg="#e74c3c")
         print("⚠️ 게임 창 검색 실패")
         return False
     
@@ -374,11 +306,6 @@ def find_game_window():
     base_height = 768
     current_scale = game_window_rect['width'] / base_width
     
-    game_window_label.config(
-        text=f"✅ '{title[:30]}...' {game_window_rect['width']}x{game_window_rect['height']} (스케일: {current_scale:.2f}x)",
-        fg="#27ae60"
-    )
-    
     print(f"🎮 게임 창 최종 선택: {title}")
     print(f"📏 클라이언트 영역: ({game_window_rect['x']}, {game_window_rect['y']}) {game_window_rect['width']}x{game_window_rect['height']}")
     print(f"📐 스케일: {current_scale:.2f}x")
@@ -394,15 +321,15 @@ def click_position(pos):
     try:
         # 1. 마우스 이동
         win32api.SetCursorPos((x, y))
-        time.sleep(0.1)  # 이동 후 대기 시간 증가
+        time.sleep(0.1)
         
         # 2. 클릭 다운
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.05)  # 다운 유지 시간 증가
+        time.sleep(0.05)
         
         # 3. 클릭 업
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.05)  # 업 후 대기
+        time.sleep(0.05)
         
         print(f"   🖱️ 클릭 완료: ({x}, {y})")
         return True
@@ -466,23 +393,15 @@ def load_lock_template():
     
     if os.path.exists(lock_template_path):
         lock_template = cv2.imread(lock_template_path, cv2.IMREAD_GRAYSCALE)
+        print("✅ lock_template.png 로드 완료")
+    else:
+        print("❌ lock_template.png 없음")
+        
     if os.path.exists(lock_button_template_path):
         lock_button_template = cv2.imread(lock_button_template_path, cv2.IMREAD_GRAYSCALE)
-    
-    if lock_template is not None:
-        template_label.config(text="✅ 아이콘 템플릿 로드 완료", fg="#27ae60")
+        print("✅ lock_button_template.png 로드 완료")
     else:
-        template_label.config(text="❌ lock_template.png 없음", fg="#e74c3c")
-    if lock_button_template is not None:
-        lock_btn_label.config(text="✅ 버튼 템플릿 로드 완료", fg="#27ae60")
-    else:
-        lock_btn_label.config(text="❌ lock_button_template.png 없음", fg="#e74c3c")
-    
-    # OCR 모드 표시
-    if USE_KOREAN_OCR:
-        ocr_mode_label.config(text="✅ OCR 모드: 한국어 (kor)", fg="#27ae60")
-    else:
-        ocr_mode_label.config(text="⚠️ OCR 모드: 영어 (eng) - 폴백", fg="#f39c12")
+        print("❌ lock_button_template.png 없음")
 
 def find_lock_button():
     global lock_button_template
@@ -611,15 +530,13 @@ def auto_detect_option_region():
                 yellow_bars.append((x, y, w, h))
         
         if len(yellow_bars) < 1:
-            print("⚠️ 옵션 영역 자동 감지 실패 - 수동 설정 필요")
-            # 기본값 설정 (1280x768 기준)
+            print("⚠️ 옵션 영역 자동 감지 실패 - 기본값 사용")
             scan_region = (
                 game_window_rect['x'] + get_scaled_value(560),
                 game_window_rect['y'] + get_scaled_value(200),
                 game_window_rect['x'] + get_scaled_value(820),
                 game_window_rect['y'] + get_scaled_value(450)
             )
-            scan_region_label.config(text=f"⚠️ 기본값 사용: {scan_region}", fg="#f39c12")
             return
             
         yellow_bars.sort(key=lambda b: b[1])
@@ -634,18 +551,15 @@ def auto_detect_option_region():
         max_y = offset_y + max(b[1] + b[3] for b in top_3)
         
         scan_region = (min_x, min_y, max_x, max_y)
-        scan_region_label.config(text=f"✅ 옵션 영역: ({min_x},{min_y}) ~ ({max_x},{max_y})", fg="#27ae60")
         print(f"✅ 옵션 영역 감지 성공: {scan_region}")
     except Exception as e:
         print(f"❌ 옵션 영역 감지 오류: {str(e)}")
-        # 오류 시 기본값
         scan_region = (
             game_window_rect['x'] + get_scaled_value(560),
             game_window_rect['y'] + get_scaled_value(200),
             game_window_rect['x'] + get_scaled_value(820),
             game_window_rect['y'] + get_scaled_value(450)
         )
-        scan_region_label.config(text=f"⚠️ 기본값 사용 (오류)", fg="#e74c3c")
 
 def auto_detect_grid():
     global first_item_pos, grid_spacing
@@ -720,21 +634,9 @@ def auto_detect_grid():
                 else:
                     print(f"✅ 계산 위치 검증 완료 (오차: {diff_x}, {diff_y})")
         
-        rel_x = first_item_pos[0] - game_window_rect['x']
-        rel_y = first_item_pos[1] - game_window_rect['y']
-        
-        auto_setup_label.config(
-            text=f"✅ 기준점: 창내({rel_x},{rel_y}) / 화면{first_item_pos}",
-            fg="#27ae60"
-        )
-        spacing_label.config(
-            text=f"✅ 간격: 가로 {grid_spacing[0]}px, 세로 {grid_spacing[1]}px",
-            fg="#27ae60"
-        )
-        status_label.config(text="👍 그리드 설정 완료!", fg="#2ecc71")
-        
-        print(f"📍 최종 첫 아이템 위치: {first_item_pos} (상대: {rel_x}, {rel_y})")
+        print(f"📍 최종 첫 아이템 위치: {first_item_pos}")
         print(f"📏 최종 간격: {grid_spacing}")
+        status_label.config(text="⏳ 대기 중...", fg="#95a5a6")
         
     except Exception as e:
         status_label.config(text=f"❌ 오류: {str(e)}", fg="#e74c3c")
@@ -749,7 +651,6 @@ def get_item_position(row, col):
     
     return (x, y)
 
-# ✅ 새로운 함수: 전체 그리드 잠금 상태 사전 스캔
 def pre_scan_all_locks():
     """모든 아이템의 잠금 상태를 미리 확인"""
     global lock_status_cache
@@ -769,21 +670,14 @@ def pre_scan_all_locks():
         for col in range(GRID_COLS):
             item_pos = get_item_position(row, col)
             
-            # 아이템 존재 여부 확인
             if not is_item_at_position(item_pos):
                 print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
                 lock_status_cache[(row, col)] = "empty"
-                # 빈 슬롯 발견 시 스캔 종료
-                status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금됨)", fg="#2ecc71")
-                precheck_label.config(
-                    text=f"✅ 사전 확인: {total_items}개 중 {locked_items}개 잠금됨",
-                    fg="#27ae60"
-                )
+                status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금)", fg="#2ecc71")
                 return total_items, locked_items
             
             total_items += 1
             
-            # 잠금 상태 확인
             is_locked = is_item_locked_template(item_pos)
             lock_status_cache[(row, col)] = "locked" if is_locked else "unlocked"
             
@@ -793,20 +687,12 @@ def pre_scan_all_locks():
             else:
                 print(f"🔓 [{row},{col}] 잠금 안됨")
             
-            # UI 업데이트
-            progress_label.config(
-                text=f"사전 확인: {total_items}/20 | 잠금: {locked_items}"
-            )
+            progress_label.config(text=f"사전 확인: {total_items}/20 | 잠금: {locked_items}")
             root.update()
             
-            # 약간의 딜레이 (안정성)
             time.sleep(0.05)
     
-    status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금됨)", fg="#2ecc71")
-    precheck_label.config(
-        text=f"✅ 사전 확인: {total_items}개 중 {locked_items}개 잠금됨",
-        fg="#27ae60"
-    )
+    status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금)", fg="#2ecc71")
     
     print("\n" + "="*60)
     print(f"✅ 사전 스캔 완료: 총 {total_items}개 중 {locked_items}개 잠금됨")
@@ -896,12 +782,6 @@ def scan_options_parallel(region, position=None):
                 
                 print(f"📝 한글비율: {quality_score:.0f}% | 텍스트: {text[:50]}")
                 
-                # ✅ 디버그 이미지 저장 조건
-                # 1. 한글 비율이 50% 미만일 때
-                # 2. position이 제공되었을 때만
-                if quality_score < 50 and position is not None:
-                    save_debug_image(img, processed_img, position, text, quality_score)
-                
                 # ✅ 줄 단위로 분리하여 각각 정규화
                 lines = text.split('\n')
                 
@@ -923,9 +803,6 @@ def scan_options_parallel(region, position=None):
                     print(f"   ✅ 정규화: {', '.join(found_keywords)}")
             else:
                 print(f"📝 인식 실패 (빈 텍스트)")
-                # 빈 텍스트도 디버그 이미지 저장
-                if position is not None:
-                    save_debug_image(img, processed_img, position, "(빈 텍스트)", 0)
                 
         except Exception as e:
             print(f"⚠️ OCR 실패: {str(e)}")
@@ -1025,39 +902,32 @@ def scan_loop():
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
     click_position(item_pos)
     
-    # ✅ 클릭 후 잠시 대기 (클릭이 확실히 처리되도록)
     time.sleep(0.2)
     
-    # ✅ 클릭 후 마우스를 (0, 0)으로 이동 (옵션창 가리지 않도록)
+    # 클릭 후 마우스를 (0, 0)으로 이동
     try:
         win32api.SetCursorPos((0, 0))
         print(f"🖱️ 마우스를 (0, 0)으로 이동")
     except:
         pass
     
-    # ✅ 사용자 설정 대기 시간 적용
-    delay_ms = int(scan_delay_after_click * 1000)
     print(f"⏱️ 클릭 후 {scan_delay_after_click:.2f}초 대기 중...")
     time.sleep(scan_delay_after_click)
     
-    # ✅ OCR 재시도 로직 강화 (최대 3회)
+    # ✅ OCR 재시도 로직 (최대 3회)
     detected_options = []
     max_retries = 3
     
     for attempt in range(max_retries):
         if attempt > 0:
             print(f"🔄 OCR 재시도 {attempt}/{max_retries-1}")
-            time.sleep(0.25)  # 재시도 전 대기
+            time.sleep(0.25)
             
-            # 재시도 시 다시 클릭 (옵션창이 안열렸을 수 있음)
             if attempt >= 1:
                 print(f"   ↻ 아이템 재클릭")
                 click_position(item_pos)
-                
-                # 재클릭 후 대기
                 time.sleep(0.2)
                 
-                # 재클릭 후에도 마우스 이동
                 try:
                     win32api.SetCursorPos((0, 0))
                     print(f"   🖱️ 마우스를 (0, 0)으로 이동")
@@ -1066,7 +936,6 @@ def scan_loop():
                 
                 time.sleep(scan_delay_after_click)
         
-        # ✅ position 정보를 전달하여 디버그 이미지 저장 가능하게 함
         detected_options = scan_options(position=(row, col))
         
         if detected_options:
@@ -1074,11 +943,7 @@ def scan_loop():
             break
         else:
             print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
-            
-            # 한글 비율이 너무 낮으면 옵션창이 닫혔거나 다른 화면
-            # 조기 종료하여 불필요한 재시도 방지
             if attempt == 0:
-                # 첫 시도 실패 시 즉시 재클릭
                 continue
     
     if detected_options:
@@ -1122,7 +987,6 @@ def scan_loop():
     
     progress_label.config(text=f"진행: {scan_state['total_scanned']}/20 | 잠금: {scan_state['total_locked']}")
     
-    # ✅ 사용자 설정 대기 시간 적용
     next_delay_ms = int(scan_delay_between_items * 1000)
     print(f"⏱️ 다음 아이템까지 {scan_delay_between_items:.2f}초 대기...")
     root.after(next_delay_ms, scan_loop)
@@ -1151,10 +1015,6 @@ def toggle_auto_scan():
                 'height': screen.height
             }
             current_scale = screen.width / 1280
-            game_window_label.config(
-                text=f"✅ 전체 화면: {screen.width}x{screen.height} ({current_scale:.2f}x)",
-                fg="#f39c12"
-            )
         else:
             return
     
@@ -1193,9 +1053,12 @@ def on_key_press(key):
 
 keyboard.Listener(on_press=on_key_press).start()
 
+# ============================================================
+# UI 구성 (최소화 버전)
+# ============================================================
 root = tk.Tk()
-root.title("Endfield Auto Scanner v8.0 DEBUG")
-root.geometry("540x980")
+root.title("Endfield Auto Scanner")
+root.geometry("600x600")
 root.attributes("-topmost", True)
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
@@ -1203,79 +1066,35 @@ style.configure("Running.TButton", foreground="#e74c3c")
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-tk.Label(f, text="엔드필드 자동 잠금 (디버그)", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+# 제목
+tk.Label(f, text="엔드필드 자동 잠금", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
 
-setup_frame = tk.LabelFrame(f, text="📊 상태", bg="white", padx=10, pady=10)
-setup_frame.pack(fill="x", pady=10)
-game_window_label = tk.Label(setup_frame, text="게임 창: 대기", bg="white", fg="#95a5a6")
-game_window_label.pack(anchor="w")
-template_label = tk.Label(setup_frame, text="템플릿 로딩 중...", bg="white", fg="#95a5a6")
-template_label.pack(anchor="w")
-lock_btn_label = tk.Label(setup_frame, text="버튼 템플릿 로딩 중...", bg="white", fg="#95a5a6")
-lock_btn_label.pack(anchor="w")
-# OCR 모드 표시 라벨 추가
-ocr_mode_label = tk.Label(setup_frame, text="OCR 모드: 확인 중...", bg="white", fg="#95a5a6")
-ocr_mode_label.pack(anchor="w")
-scan_region_label = tk.Label(setup_frame, text="옵션 영역: 대기", bg="white", fg="#95a5a6")
-scan_region_label.pack(anchor="w")
-auto_setup_label = tk.Label(setup_frame, text="그리드: 대기", bg="white", fg="#95a5a6")
-auto_setup_label.pack(anchor="w")
-spacing_label = tk.Label(setup_frame, text="간격: 대기", bg="white", fg="#95a5a6")
-spacing_label.pack(anchor="w")
-precheck_label = tk.Label(setup_frame, text="사전 확인: 대기", bg="white", fg="#95a5a6")
-precheck_label.pack(anchor="w")
-
-# ✅ 스캔 간격 표시 (고정값)
-delay_frame = tk.LabelFrame(f, text="⏱️ 스캔 간격 (고정)", bg="white", padx=10, pady=10)
-delay_frame.pack(fill="x", pady=10)
-
-tk.Label(
-    delay_frame, 
-    text=f"• 아이템 클릭 후 대기: {scan_delay_after_click:.2f}초", 
-    bg="white", 
-    anchor="w",
-    font=("Malgun Gothic", 9)
-).pack(anchor="w", pady=2)
-
-tk.Label(
-    delay_frame, 
-    text=f"• 다음 아이템 대기: {scan_delay_between_items:.2f}초", 
-    bg="white", 
-    anchor="w",
-    font=("Malgun Gothic", 9)
-).pack(anchor="w", pady=2)
-
-# 디버그 정보 표시
-tk.Label(
-    delay_frame, 
-    text=f"• 디버그 이미지 저장: {DEBUG_DIR}/", 
-    bg="white", 
-    anchor="w",
-    font=("Malgun Gothic", 9),
-    fg="#e67e22"
-).pack(anchor="w", pady=2)
-
+# 자동 스캔 버튼
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
 
-status_label = tk.Label(f, text="⏳ 대기 중...", font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1")
-status_label.pack()
-progress_label = tk.Label(f, text="진행: 0/20 | 잠금: 0", bg="#ecf0f1")
-progress_label.pack()
+# 상태 라벨
+status_label = tk.Label(f, text="⏳ 대기 중...", font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1", fg="#95a5a6")
+status_label.pack(pady=(10, 5))
 
-result_frame = tk.LabelFrame(f, text="📊 실시간 결과", bg="white", padx=10, pady=10)
-result_frame.pack(fill="both", expand=True, pady=10)
-option_label = tk.Label(result_frame, text="감지: -", bg="white", anchor="w")
-option_label.pack(fill="x")
-match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w")
-match_label.pack(fill="x")
+# 진행 라벨
+progress_label = tk.Label(f, text="진행: 0/20 | 잠금: 0", font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
+progress_label.pack(pady=5)
 
-help_frame = tk.LabelFrame(f, text="💡 도움말", bg="white", padx=10, pady=5)
-help_frame.pack(fill="x", pady=5)
-tk.Label(help_frame, text="• v8.0 DEBUG: OCR 실패 시 이미지 자동 저장", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 한글 비율 50% 미만 시 디버그 이미지 생성", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• 저장 위치: debug_ocr/ 폴더", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
-tk.Label(help_frame, text="• F1: 스캔 시작/중지, F2: 강제 중지", bg="white", anchor="w", font=("Malgun Gothic", 8)).pack(anchor="w")
+# 실시간 결과 프레임
+result_frame = tk.LabelFrame(f, text="📊 실시간 결과", bg="white", padx=15, pady=10, font=("Malgun Gothic", 10, "bold"))
+result_frame.pack(fill="both", expand=True, pady=(10, 0))
+
+option_label = tk.Label(result_frame, text="감지: -", bg="white", anchor="w", font=("Malgun Gothic", 9))
+option_label.pack(fill="x", pady=3)
+
+match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w", font=("Malgun Gothic", 9))
+match_label.pack(fill="x", pady=3)
+
+# 도움말 (단축키만)
+help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지", 
+                      bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
+help_label.pack(pady=(10, 0))
 
 root.after(100, load_lock_template)
 root.mainloop()

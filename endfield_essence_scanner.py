@@ -119,8 +119,7 @@ scan_delay_between_items = 0.2  # 다음 아이템으로 넘어갈 때 대기 �
 # ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
 lock_status_cache = {}
 
-# ✅ OCR 병렬 처리 워커 증가 (2 -> 4)
-ocr_executor = ThreadPoolExecutor(max_workers=4)
+# ✅ OCR 캐시
 ocr_cache = {}
 cache_lock = threading.Lock()
 
@@ -785,7 +784,7 @@ def preprocess_image_fast(img):
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     
-    # 2배 확대만 적용 (3배 -> 2배로 최적화)
+    # 2배 확대만 적용
     resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     
     # 반전 및 이진화
@@ -795,51 +794,11 @@ def preprocess_image_fast(img):
     return Image.fromarray(binary)
 
 # ============================================================
-# ⭐⭐⭐ 영역 분할 OCR 함수
+# ⭐ 단일 영역 OCR 함수
 # ============================================================
-def ocr_region_worker(region_bbox, region_id, position=None):
+def scan_options_single(region, position=None):
     """
-    특정 영역에 대해 OCR을 수행하는 워커 함수
-    position: (row, col) 튜플
-    """
-    try:
-        # 이미지 캡처
-        img = ImageGrab.grab(bbox=region_bbox)
-        
-        # 빠른 전처리
-        processed_img = preprocess_image_fast(img)
-        
-        # OCR 실행
-        text = pytesseract.image_to_string(
-            processed_img, 
-            lang=TESSERACT_LANG,
-            config=TESSERACT_CONFIG
-        )
-        
-        found_keywords = []
-        
-        if text.strip():
-            lines = text.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                normalized = normalize_korean_text(line)
-                
-                if normalized and normalized not in found_keywords:
-                    found_keywords.append(normalized)
-        
-        return region_id, found_keywords
-        
-    except Exception as e:
-        print(f"⚠️ 영역 {region_id} OCR 오류: {str(e)}")
-        return region_id, []
-
-def scan_options_parallel_split(region, position=None):
-    """
-    ⭐ OCR 영역을 3등분하여 병렬 처리
+    전체 영역을 한 번에 OCR 처리
     position: (row, col) 튜플
     """
     try:
@@ -865,68 +824,57 @@ def scan_options_parallel_split(region, position=None):
             print(f"⚠️ 이미지가 너무 어두움 - 옵션창이 안열렸을 가능성")
             return []
         
-        # ⭐ 영역을 위아래로 3등분
-        x1, y1, x2, y2 = region
-        height = y2 - y1
-        section_height = height // 3
+        print(f"🔄 단일 영역 OCR 시작")
         
-        # 약간의 오버랩 적용 (텍스트 잘림 방지)
-        overlap = 5
+        # 이미지 캡처 및 전처리
+        img = ImageGrab.grab(bbox=region)
+        processed_img = preprocess_image_fast(img)
         
-        regions = [
-            (x1, y1, x2, y1 + section_height + overlap, 0),  # 상단
-            (x1, y1 + section_height - overlap, x2, y1 + 2*section_height + overlap, 1),  # 중간
-            (x1, y1 + 2*section_height - overlap, x2, y2, 2),  # 하단
-        ]
+        # OCR 실행
+        text = pytesseract.image_to_string(
+            processed_img, 
+            lang=TESSERACT_LANG,
+            config=TESSERACT_CONFIG
+        )
         
-        print(f"🔄 영역 3분할 병렬 OCR 시작")
-        
-        # ⭐ 병렬 처리 실행
-        all_keywords = []
-        futures = []
-        
-        for region_bbox in regions:
-            bbox = region_bbox[:-1]  # 마지막 ID 제외
-            region_id = region_bbox[-1]
-            future = ocr_executor.submit(ocr_region_worker, bbox, region_id, position)
-            futures.append(future)
-        
-        # 결과 수집
-        for future in as_completed(futures):
-            region_id, keywords = future.result()
-            if keywords:
-                print(f"   ✅ 영역 {region_id}: {', '.join(keywords)}")
-                all_keywords.extend(keywords)
-            else:
-                print(f"   ⚠️ 영역 {region_id}: 인식 실패")
-        
-        # ⭐⭐ 중복 제거 - 복합어 우선순위 적용
-        # "궁극기 충전 효율"이 있으면 "효율" 제거
-        # "치유 효율"이 있으면 "효율" 제거
         found_keywords = []
         seen = set()
         
-        # 복합어 우선 목록
-        compound_keywords = ["궁극기 충전 효율", "치유 효율"]
-        sub_keywords = {"효율"}  # 복합어에 포함된 하위 키워드
-        
-        # 1단계: 복합어를 먼저 추가
-        for keyword in all_keywords:
-            if keyword in compound_keywords and keyword not in seen:
-                found_keywords.append(keyword)
-                seen.add(keyword)
-        
-        # 2단계: 복합어가 이미 있으면 하위 키워드 제외
-        has_compound_with_efficiency = any(k in seen for k in compound_keywords)
-        
-        # 3단계: 나머지 키워드 추가
-        for keyword in all_keywords:
-            if keyword not in seen:
-                # "효율"은 복합어가 있을 때만 제외
-                if keyword == "효율" and has_compound_with_efficiency:
+        if text.strip():
+            lines = text.split('\n')
+            
+            # 복합어 우선 목록
+            compound_keywords = ["궁극기 충전 효율", "치유 효율"]
+            
+            # 1단계: 각 라인에서 키워드 추출
+            all_keywords = []
+            for line in lines:
+                line = line.strip()
+                if not line:
                     continue
-                found_keywords.append(keyword)
-                seen.add(keyword)
+                
+                normalized = normalize_korean_text(line)
+                
+                if normalized:
+                    all_keywords.append(normalized)
+            
+            # 2단계: 복합어 우선 처리
+            for keyword in all_keywords:
+                if keyword in compound_keywords and keyword not in seen:
+                    found_keywords.append(keyword)
+                    seen.add(keyword)
+            
+            # 3단계: 복합어가 있으면 "효율" 제외
+            has_compound_with_efficiency = any(k in seen for k in compound_keywords)
+            
+            # 4단계: 나머지 키워드 추가
+            for keyword in all_keywords:
+                if keyword not in seen:
+                    # "효율"은 복합어가 있을 때만 제외
+                    if keyword == "효율" and has_compound_with_efficiency:
+                        continue
+                    found_keywords.append(keyword)
+                    seen.add(keyword)
         
         if not found_keywords:
             print(f"❌ OCR 완전 실패 - 인식된 키워드 없음")
@@ -951,7 +899,7 @@ def scan_options_parallel_split(region, position=None):
 
 def scan_options(position=None):
     """OCR 스캔 메인 함수"""
-    return scan_options_parallel_split(scan_region, position)
+    return scan_options_single(scan_region, position)
 
 def check_weapon_match(options):
     """
@@ -1269,10 +1217,9 @@ match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w", f
 match_label.pack(fill="x", pady=3)
 
 # 도움말
-help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지  |  ⚡ 영역 3분할 병렬 OCR", 
+help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지  |  ⚡ 단일 영역 OCR", 
                       bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
 help_label.pack(pady=(10, 0))
 
 root.after(100, load_lock_template)
 root.mainloop()
-    

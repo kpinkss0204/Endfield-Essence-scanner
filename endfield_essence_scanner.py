@@ -124,6 +124,78 @@ ocr_executor = ThreadPoolExecutor(max_workers=4)
 ocr_cache = {}
 cache_lock = threading.Lock()
 
+# ✅ 스캔 결과 로그 저장
+scan_log = []
+log_file_path = None
+
+def init_log_file():
+    """로그 파일 경로 초기화 (타임스탬프 포함)"""
+    global log_file_path
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    log_file_path = f"scan_result_{timestamp}.txt"
+    
+def save_scan_log():
+    """스캔 로그를 txt 파일로 저장"""
+    if not log_file_path or not scan_log:
+        return
+    
+    try:
+        with open(log_file_path, 'w', encoding='utf-8') as f:
+            f.write("="*60 + "\n")
+            f.write("엔드필드 자동 스캔 결과\n")
+            f.write(f"스캔 시간: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("="*60 + "\n\n")
+            
+            total_scanned = len([log for log in scan_log if log['status'] != 'empty'])
+            total_locked = len([log for log in scan_log if log['locked']])
+            total_skipped = len([log for log in scan_log if log['status'] == 'pre_locked'])
+            
+            f.write(f"📊 요약\n")
+            f.write(f"  - 스캔한 아이템: {total_scanned}개\n")
+            f.write(f"  - 새로 잠금: {total_locked}개\n")
+            f.write(f"  - 이미 잠금됨: {total_skipped}개\n")
+            f.write("\n" + "="*60 + "\n\n")
+            
+            for log_entry in scan_log:
+                row, col = log_entry['position']
+                f.write(f"[{row},{col}] ")
+                
+                if log_entry['status'] == 'empty':
+                    f.write("빈 슬롯\n\n")
+                    continue
+                
+                if log_entry['status'] == 'pre_locked':
+                    f.write("🔒 이미 잠금됨 (건너뜀)\n\n")
+                    continue
+                
+                if not log_entry['options']:
+                    f.write("❌ OCR 실패\n\n")
+                    continue
+                
+                f.write(f"\n옵션: {', '.join(log_entry['options'])}\n")
+                
+                if log_entry['matches']:
+                    f.write(f"매칭: {', '.join(log_entry['matches'])}\n")
+                    if log_entry['locked']:
+                        f.write("결과: ✅ 잠금 완료\n")
+                    else:
+                        f.write("결과: ⚠️ 잠금 실패\n")
+                else:
+                    f.write("매칭: 없음\n")
+                    f.write("결과: - (잠금 안함)\n")
+                
+                f.write("\n")
+            
+            f.write("="*60 + "\n")
+            f.write("스캔 완료\n")
+        
+        print(f"✅ 로그 파일 저장 완료: {log_file_path}")
+        return log_file_path
+        
+    except Exception as e:
+        print(f"❌ 로그 저장 실패: {str(e)}")
+        return None
+
 # ============================================================
 # 한국어 텍스트 보정 함수 (weapons_db.json 기반)
 # ============================================================
@@ -168,7 +240,20 @@ def normalize_korean_text(text):
     if re.search(r'치[유우]', clean) and re.search(r'효[율률]', clean):
         return "치유 효율"
     
-    # 4. 핵심 스탯 오타 보정
+    # ⭐⭐ 4. 아츠 관련 (스탯보다 먼저 체크 - '지능'과 충돌 방지)
+    # "오리지늄" 키워드가 있으면 무조건 아츠 관련
+    if re.search(r'오리지[늄눔넘념]|오리즈|오리츠', clean):
+        return "아츠 강도"
+    
+    # "아츠 강도"
+    if re.search(r'아[츠즈측].*강[도돠]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'강[도돠]', clean)):
+        return "아츠 강도"
+    
+    # "아츠 피해"
+    if re.search(r'아[츠즈측].*피[해혜]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'피[해혜]', clean)):
+        return "아츠 피해"
+    
+    # 5. 핵심 스탯 오타 보정
     # "공격력"
     if re.search(r'걱럭|격턱|공[격걱]|격력|공력|^럭$|^공$|콜굴|콜골|휼콜|드룰', clean):
         return "공격력"
@@ -181,7 +266,7 @@ def normalize_korean_text(text):
     if re.search(r'민[첩접쳡]', clean):
         return "민첩성"
     
-    # "지능"
+    # "지능" (⭐ 아츠 체크 후에 매칭)
     if re.search(r'지[능늄]|시능|자능', clean):
         return "지능"
     
@@ -192,15 +277,6 @@ def normalize_korean_text(text):
     # "힘"
     if re.search(r'^힘$|흐임|그[룹룰옵루]|^[으우]루$|^루$', clean):
         return "힘"
-    
-    # 5. 아츠 관련
-    # "아츠 강도"
-    if re.search(r'아[츠즈측].*강[도돠]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'강[도돠]', clean)):
-        return "아츠 강도"
-    
-    # "아츠 피해"
-    if re.search(r'아[츠즈측].*피[해혜]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'피[해혜]', clean)):
-        return "아츠 피해"
     
     # 6. 속성 피해
     if re.search(r'물[리이]|그리', clean) and re.search(r'피[해혜]', clean):
@@ -719,7 +795,7 @@ def preprocess_image_fast(img):
     return Image.fromarray(binary)
 
 # ============================================================
-# ⭐⭐⭐ 영역 분할 OCR 함수 (디버깅 코드 제거)
+# ⭐⭐⭐ 영역 분할 OCR 함수
 # ============================================================
 def ocr_region_worker(region_bbox, region_id, position=None):
     """
@@ -901,6 +977,12 @@ def scan_loop():
     if row >= GRID_ROWS:
         status_label.config(text=f"✅ 완료! (총 {scan_state['total_scanned']}개)", fg="#2ecc71")
         stop_scan_ui()
+        
+        # ✅ 스캔 완료 시 로그 파일 저장
+        saved_path = save_scan_log()
+        if saved_path:
+            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
+        
         return
 
     item_pos = get_item_position(row, col)
@@ -914,13 +996,38 @@ def scan_loop():
     if cache_status == "empty":
         print(f"⚠️ [{row},{col}] 빈 슬롯 (사전 확인됨) - 스캔 종료")
         status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
+        
+        # ✅ 로그 기록
+        scan_log.append({
+            'position': (row, col),
+            'status': 'empty',
+            'options': [],
+            'matches': [],
+            'locked': False
+        })
+        
         stop_scan_ui()
+        
+        # ✅ 스캔 완료 시 로그 파일 저장
+        saved_path = save_scan_log()
+        if saved_path:
+            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
+        
         return
     
     if cache_status == "locked":
         print(f"🔒 [{row},{col}] 이미 잠금됨 (사전 확인됨) - 건너뜀")
         match_label.config(text="🔒 이미 잠금됨", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금)", fg="#95a5a6")
+        
+        # ✅ 로그 기록
+        scan_log.append({
+            'position': (row, col),
+            'status': 'pre_locked',
+            'options': [],
+            'matches': [],
+            'locked': False
+        })
         
         scan_state["total_scanned"] += 1
         scan_state["current_col"] += 1
@@ -936,7 +1043,23 @@ def scan_loop():
     if not is_item_at_position(item_pos):
         print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
         status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
+        
+        # ✅ 로그 기록
+        scan_log.append({
+            'position': (row, col),
+            'status': 'empty',
+            'options': [],
+            'matches': [],
+            'locked': False
+        })
+        
         stop_scan_ui()
+        
+        # ✅ 스캔 완료 시 로그 파일 저장
+        saved_path = save_scan_log()
+        if saved_path:
+            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
+        
         return
     
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
@@ -981,13 +1104,17 @@ def scan_loop():
         else:
             print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
     
+    # 결과 처리 및 로그 기록
+    item_locked = False
+    matched_weapons = []
+    
     if detected_options:
         option_text = ", ".join(detected_options)
         option_label.config(text=f"감지: {option_text}", fg="#27ae60")
         
-        matches = check_weapon_match(detected_options)
-        if matches:
-            match_text = ", ".join(matches)
+        matched_weapons = check_weapon_match(detected_options)
+        if matched_weapons:
+            match_text = ", ".join(matched_weapons)
             match_label.config(text=f"✅ 일치: {match_text}", fg="#27ae60")
             print(f"🎯 매칭: {match_text}")
             
@@ -995,6 +1122,7 @@ def scan_loop():
             if btn_pos: 
                 click_position(btn_pos)
                 scan_state["total_locked"] += 1
+                item_locked = True
                 print(f"🔐 잠금 완료")
                 time.sleep(0.1)  # 0.15 -> 0.1 최적화
             else:
@@ -1004,6 +1132,7 @@ def scan_loop():
                 if btn_pos:
                     click_position(btn_pos)
                     scan_state["total_locked"] += 1
+                    item_locked = True
                     print(f"🔐 잠금 완료 (재시도)")
                 else:
                     print(f"❌ 잠금 버튼 찾기 완전 실패")
@@ -1013,6 +1142,15 @@ def scan_loop():
     else: 
         option_label.config(text=f"❌ OCR 실패 ({max_retries}회)", fg="#e74c3c")
         print(f"❌ 옵션 인식 완전 실패 ({max_retries}회 시도)")
+    
+    # ✅ 로그 기록
+    scan_log.append({
+        'position': (row, col),
+        'status': 'scanned',
+        'options': detected_options,
+        'matches': matched_weapons,
+        'locked': item_locked
+    })
     
     scan_state["total_scanned"] += 1
     scan_state["current_col"] += 1
@@ -1027,7 +1165,7 @@ def scan_loop():
     root.after(next_delay_ms, scan_loop)
 
 def toggle_auto_scan():
-    global auto_scan_enabled
+    global auto_scan_enabled, scan_log
     if auto_scan_enabled: 
         stop_scan_ui()
         return
@@ -1057,6 +1195,10 @@ def toggle_auto_scan():
     auto_detect_grid()
     
     if scan_region and first_item_pos:
+        # ✅ 로그 초기화
+        scan_log = []
+        init_log_file()
+        
         # 사전 스캔 실행
         total, locked = pre_scan_all_locks()
         
@@ -1133,3 +1275,4 @@ help_label.pack(pady=(10, 0))
 
 root.after(100, load_lock_template)
 root.mainloop()
+    

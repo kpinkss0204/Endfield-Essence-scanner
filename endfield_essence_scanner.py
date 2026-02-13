@@ -13,7 +13,7 @@ import win32con
 import win32gui
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import json
 
@@ -112,14 +112,15 @@ GRID_ROWS = 6
 auto_scan_enabled = False
 scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
 
-# ✅ 스캔 간격 고정값 (초 단위)
-scan_delay_after_click = 0.55  # 아이템 클릭 후 대기 시간 (고정)
-scan_delay_between_items = 0.30  # 다음 아이템으로 넘어갈 때 대기 시간 (고정)
+# ✅ 스캔 간격 최적화 (더 짧게)
+scan_delay_after_click = 0.4  # 아이템 클릭 후 대기 시간 (0.55 -> 0.4)
+scan_delay_between_items = 0.2  # 다음 아이템으로 넘어갈 때 대기 시간 (0.30 -> 0.2)
 
 # ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
 lock_status_cache = {}
 
-ocr_executor = ThreadPoolExecutor(max_workers=2)
+# ✅ OCR 병렬 처리 워커 증가 (2 -> 4)
+ocr_executor = ThreadPoolExecutor(max_workers=4)
 ocr_cache = {}
 cache_lock = threading.Lock()
 
@@ -148,11 +149,11 @@ def normalize_korean_text(text):
     if not clean:
         return None
     
-    # ⭐ 3. 긴 단어 우선 매칭 (겹침 방지)
-    # "궁극기 충전 효율" - 모든 키워드가 있어야 매칭
+    # ⭐ 3. 긴 단어 우선 매칭 (겹침 방지) - 순서 중요!
+    
+    # ⭐⭐ "궁극기 충전 효율" - 모든 키워드가 있어야 매칭 (가장 먼저 체크)
     if (re.search(r'궁[극국귱]', clean) and 
-        re.search(r'충[전젼]', clean) and 
-        re.search(r'효[율률]', clean)):
+        re.search(r'(충[전젼]|획득)', clean)) :
         return "궁극기 충전 효율"
     
     # "주요 능력치"
@@ -240,12 +241,13 @@ def normalize_korean_text(text):
         return "사기"
     if re.search(r'의[료로]', clean):
         return "의료"
+    
     # ⭐ "효율"은 가장 마지막에 체크 (다른 복합어 매칭 후)
+    # 단, 앞에서 이미 "궁극기 충전 효율", "치유 효율" 체크 완료
     if re.search(r'효[율률]', clean):
         return "효율"
     
     # 8. 매칭 실패 시 None 반환
-    print(f"   ⚠️ 매칭 실패: '{clean}' (원본: {text[:30]})")
     return None
 
 def find_game_window():
@@ -324,15 +326,15 @@ def click_position(pos):
     try:
         # 1. 마우스 이동
         win32api.SetCursorPos((x, y))
-        time.sleep(0.1)
+        time.sleep(0.05)  # 0.1 -> 0.05 최적화
         
         # 2. 클릭 다운
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.05)
+        time.sleep(0.03)  # 0.05 -> 0.03 최적화
         
         # 3. 클릭 업
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.05)
+        time.sleep(0.03)  # 0.05 -> 0.03 최적화
         
         print(f"   🖱️ 클릭 완료: ({x}, {y})")
         return True
@@ -466,7 +468,6 @@ def is_item_locked_template(item_pos):
         search_bbox = (search_x1, search_y1, search_x2, search_y2)
 
         if (search_x2 - search_x1) < 10 or (search_y2 - search_y1) < 10:
-            print(f"  ⚠️ 검색 영역 너무 작음: {search_bbox}")
             return False
 
         search_img = ImageGrab.grab(bbox=search_bbox)
@@ -481,21 +482,16 @@ def is_item_locked_template(item_pos):
 
         if (scaled_template.shape[1] > search_gray.shape[1] or
                 scaled_template.shape[0] > search_gray.shape[0]):
-            print(f"  ⚠️ 템플릿({scaled_template.shape[1]}x{scaled_template.shape[0]})이 "
-                  f"검색영역({search_gray.shape[1]}x{search_gray.shape[0]})보다 큼 → 잠금 안됨 처리")
             return False
 
         result = cv2.matchTemplate(search_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
         is_locked = max_val >= 0.78
-        print(f"  🔎 잠금 감지: 검색영역={search_bbox} | 매칭점수={max_val:.3f} | "
-              f"임계값=0.78 | {'🔒 잠금됨' if is_locked else '🔓 잠금안됨'}")
 
         return is_locked
 
     except Exception as e:
-        print(f"  ❌ 잠금 감지 오류: {str(e)}")
         return False
 
 def auto_detect_option_region():
@@ -693,7 +689,7 @@ def pre_scan_all_locks():
             progress_label.config(text=f"사전 확인: {total_items}/24 | 잠금: {locked_items}")
             root.update()
             
-            time.sleep(0.05)
+            time.sleep(0.03)  # 0.05 -> 0.03 최적화
     
     status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금)", fg="#2ecc71")
     
@@ -704,130 +700,173 @@ def pre_scan_all_locks():
     return total_items, locked_items
 
 # ============================================================
-# 이미지 전처리 함수 (CLAHE 방식)
+# ⭐ 최적화된 이미지 전처리 함수
 # ============================================================
-def preprocess_image_clahe(img):
+def preprocess_image_fast(img):
     """
-    CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    빠른 전처리 (스케일만 적용)
     """
     img_array = np.array(img)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     
-    scale = 3
-    resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    # 2배 확대만 적용 (3배 -> 2배로 최적화)
+    resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(resized)
-    inverted = cv2.bitwise_not(enhanced)
+    # 반전 및 이진화
+    inverted = cv2.bitwise_not(resized)
     _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
     return Image.fromarray(binary)
 
-def scan_options_parallel(region, position=None):
+# ============================================================
+# ⭐⭐⭐ 영역 분할 OCR 함수 (디버깅 코드 제거)
+# ============================================================
+def ocr_region_worker(region_bbox, region_id, position=None):
+    """
+    특정 영역에 대해 OCR을 수행하는 워커 함수
+    position: (row, col) 튜플
+    """
     try:
+        # 이미지 캡처
+        img = ImageGrab.grab(bbox=region_bbox)
+        
+        # 빠른 전처리
+        processed_img = preprocess_image_fast(img)
+        
+        # OCR 실행
+        text = pytesseract.image_to_string(
+            processed_img, 
+            lang=TESSERACT_LANG,
+            config=TESSERACT_CONFIG
+        )
+        
+        found_keywords = []
+        
+        if text.strip():
+            lines = text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                normalized = normalize_korean_text(line)
+                
+                if normalized and normalized not in found_keywords:
+                    found_keywords.append(normalized)
+        
+        return region_id, found_keywords
+        
+    except Exception as e:
+        print(f"⚠️ 영역 {region_id} OCR 오류: {str(e)}")
+        return region_id, []
+
+def scan_options_parallel_split(region, position=None):
+    """
+    ⭐ OCR 영역을 3등분하여 병렬 처리
+    position: (row, col) 튜플
+    """
+    try:
+        # 캐시 확인
         region_key = str(region)
         with cache_lock:
             if region_key in ocr_cache:
                 cache_data = ocr_cache[region_key]
-                if len(cache_data) == 3:
-                    cache_time, result, cached_text = cache_data
-                elif len(cache_data) == 2:
-                    cache_time, result = cache_data
-                    cached_text = "(텍스트 정보 없음)"
-                else:
-                    del ocr_cache[region_key]
-                    cache_time = 0
-                
-                if cache_time > 0 and time.time() - cache_time < 1.0:
-                    print(f"📦 캐시 사용")
-                    if len(cache_data) == 3:
-                        print(f"📄 캐시된 텍스트: {cached_text[:100]}...")
-                    if result:
-                        print(f"✅ 인식: {', '.join(result)}")
-                    else:
-                        print(f"⚠️ 인식된 키워드 없음")
-                    return result
+                if len(cache_data) >= 2:
+                    cache_time, result = cache_data[0], cache_data[1]
+                    if time.time() - cache_time < 1.0:
+                        print(f"📦 캐시 사용")
+                        if result:
+                            print(f"✅ 인식: {', '.join(result)}")
+                        return result
         
-        img = ImageGrab.grab(bbox=region)
-        
-        # 이미지 밝기 체크
-        img_array = np.array(img)
-        avg_brightness = np.mean(img_array)
+        # 전체 영역 밝기 체크
+        test_img = ImageGrab.grab(bbox=region)
+        avg_brightness = np.mean(np.array(test_img))
         print(f"📊 이미지 밝기: {avg_brightness:.1f}")
         
         if avg_brightness < 10:
             print(f"⚠️ 이미지가 너무 어두움 - 옵션창이 안열렸을 가능성")
             return []
         
-        found_keywords = []
+        # ⭐ 영역을 위아래로 3등분
+        x1, y1, x2, y2 = region
+        height = y2 - y1
+        section_height = height // 3
         
-        # 한글 OCR (CLAHE 전처리)
-        print(f"🔤 한글 OCR (CLAHE 전처리)")
+        # 약간의 오버랩 적용 (텍스트 잘림 방지)
+        overlap = 5
         
-        try:
-            processed_img = preprocess_image_clahe(img)
-            
-            # 한국어 OCR 실행
-            text = pytesseract.image_to_string(
-                processed_img, 
-                lang=TESSERACT_LANG,
-                config=TESSERACT_CONFIG
-            )
-            
-            korean_chars = 0
-            total_chars = 0
-            quality_score = 0
-            
-            if text.strip():
-                korean_chars = len(re.findall(r'[\uAC00-\uD7A3]', text))
-                total_chars = len(re.sub(r'\s', '', text))
-                quality_score = korean_chars / max(total_chars, 1) * 100
-                
-                print(f"📝 한글비율: {quality_score:.0f}% | 텍스트: {text[:50]}")
-                
-                # ✅ 줄 단위로 분리하여 각각 정규화
-                lines = text.split('\n')
-                
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    print(f"   📋 처리 중인 줄: '{line}'")
-                    normalized = normalize_korean_text(line)
-                    if normalized:
-                        if normalized not in found_keywords:
-                            found_keywords.append(normalized)
-                            print(f"      ✅ 추가됨: '{normalized}'")
-                        else:
-                            print(f"      ⏭️ 이미 있음: '{normalized}'")
-                
-                if found_keywords:
-                    print(f"   ✅ 정규화: {', '.join(found_keywords)}")
+        regions = [
+            (x1, y1, x2, y1 + section_height + overlap, 0),  # 상단
+            (x1, y1 + section_height - overlap, x2, y1 + 2*section_height + overlap, 1),  # 중간
+            (x1, y1 + 2*section_height - overlap, x2, y2, 2),  # 하단
+        ]
+        
+        print(f"🔄 영역 3분할 병렬 OCR 시작")
+        
+        # ⭐ 병렬 처리 실행
+        all_keywords = []
+        futures = []
+        
+        for region_bbox in regions:
+            bbox = region_bbox[:-1]  # 마지막 ID 제외
+            region_id = region_bbox[-1]
+            future = ocr_executor.submit(ocr_region_worker, bbox, region_id, position)
+            futures.append(future)
+        
+        # 결과 수집
+        for future in as_completed(futures):
+            region_id, keywords = future.result()
+            if keywords:
+                print(f"   ✅ 영역 {region_id}: {', '.join(keywords)}")
+                all_keywords.extend(keywords)
             else:
-                print(f"📝 인식 실패 (빈 텍스트)")
-                
-        except Exception as e:
-            print(f"⚠️ OCR 실패: {str(e)}")
+                print(f"   ⚠️ 영역 {region_id}: 인식 실패")
         
-        # ===== 결과 처리 =====
+        # ⭐⭐ 중복 제거 - 복합어 우선순위 적용
+        # "궁극기 충전 효율"이 있으면 "효율" 제거
+        # "치유 효율"이 있으면 "효율" 제거
+        found_keywords = []
+        seen = set()
+        
+        # 복합어 우선 목록
+        compound_keywords = ["궁극기 충전 효율", "치유 효율"]
+        sub_keywords = {"효율"}  # 복합어에 포함된 하위 키워드
+        
+        # 1단계: 복합어를 먼저 추가
+        for keyword in all_keywords:
+            if keyword in compound_keywords and keyword not in seen:
+                found_keywords.append(keyword)
+                seen.add(keyword)
+        
+        # 2단계: 복합어가 이미 있으면 하위 키워드 제외
+        has_compound_with_efficiency = any(k in seen for k in compound_keywords)
+        
+        # 3단계: 나머지 키워드 추가
+        for keyword in all_keywords:
+            if keyword not in seen:
+                # "효율"은 복합어가 있을 때만 제외
+                if keyword == "효율" and has_compound_with_efficiency:
+                    continue
+                found_keywords.append(keyword)
+                seen.add(keyword)
+        
         if not found_keywords:
             print(f"❌ OCR 완전 실패 - 인식된 키워드 없음")
             return []
-        
-        # 중복 제거 (순서 유지)
-        found_keywords = list(dict.fromkeys(found_keywords))
         
         print(f"✅ 최종 인식: {', '.join(found_keywords)}")
         
         # 캐시 저장
         with cache_lock:
-            ocr_cache[region_key] = (time.time(), found_keywords, "")
+            ocr_cache[region_key] = (time.time(), found_keywords)
             if len(ocr_cache) > 50:
                 oldest = min(ocr_cache.items(), key=lambda x: x[1][0])
                 del ocr_cache[oldest[0]]
         
         return found_keywords
+        
     except Exception as e:
         print(f"❌ OCR 오류: {str(e)}")
         import traceback
@@ -835,21 +874,19 @@ def scan_options_parallel(region, position=None):
         return []
 
 def scan_options(position=None):
-    return scan_options_parallel(scan_region, position)
+    """OCR 스캔 메인 함수"""
+    return scan_options_parallel_split(scan_region, position)
 
 def check_weapon_match(options):
     """
     인식된 한글 옵션들과 무기 DB를 비교하여 매칭되는 무기 반환
-    options: ["주요능력치", "공격력", "억제"] 형태의 한글 리스트
     """
     matched_weapons = []
     
     for name, req_opts in WEAPON_DB.items():
-        # _comment로 시작하는 키는 건너뛰기
         if name.startswith('_comment'):
             continue
         
-        # 무기가 요구하는 모든 옵션이 인식된 옵션에 포함되어 있는지 확인
         if all(opt in options for opt in req_opts):
             matched_weapons.append(name)
             print(f"   🎯 매칭: {name} (필요: {', '.join(req_opts)})")
@@ -871,7 +908,7 @@ def scan_loop():
     print(f"\n{'='*50}")
     print(f"🔍 [{row},{col}] 스캔 중 - 위치: {item_pos}")
     
-    # ✅ 사전 스캔 결과 확인
+    # 사전 스캔 결과 확인
     cache_status = lock_status_cache.get((row, col), None)
     
     if cache_status == "empty":
@@ -892,10 +929,10 @@ def scan_loop():
             scan_state["current_row"] += 1
         
         progress_label.config(text=f"진행: {scan_state['total_scanned']}/24 | 잠금: {scan_state['total_locked']}")
-        root.after(200, scan_loop)
+        root.after(100, scan_loop)  # 200 -> 100 최적화
         return
     
-    # 실시간 아이템 존재 확인 (이중 체크)
+    # 실시간 아이템 존재 확인
     if not is_item_at_position(item_pos):
         print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
         status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
@@ -905,39 +942,36 @@ def scan_loop():
     print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
     click_position(item_pos)
     
-    time.sleep(0.2)
+    time.sleep(0.15)  # 0.2 -> 0.15 최적화
     
-    # 클릭 후 마우스를 (0, 0)으로 이동
+    # 마우스를 (0, 0)으로 이동
     try:
         win32api.SetCursorPos((0, 0))
-        print(f"🖱️ 마우스를 (0, 0)으로 이동")
     except:
         pass
     
     print(f"⏱️ 클릭 후 {scan_delay_after_click:.2f}초 대기 중...")
     time.sleep(scan_delay_after_click)
     
-    # ✅ OCR 재시도 로직 (최대 3회)
+    # OCR 재시도 로직 (최대 2회로 감소)
     detected_options = []
-    max_retries = 3
+    max_retries = 2  # 3 -> 2로 최적화
     
     for attempt in range(max_retries):
         if attempt > 0:
             print(f"🔄 OCR 재시도 {attempt}/{max_retries-1}")
-            time.sleep(0.25)
+            time.sleep(0.2)  # 0.25 -> 0.2 최적화
             
-            if attempt >= 1:
-                print(f"   ↻ 아이템 재클릭")
-                click_position(item_pos)
-                time.sleep(0.2)
-                
-                try:
-                    win32api.SetCursorPos((0, 0))
-                    print(f"   🖱️ 마우스를 (0, 0)으로 이동")
-                except:
-                    pass
-                
-                time.sleep(scan_delay_after_click)
+            print(f"   ↻ 아이템 재클릭")
+            click_position(item_pos)
+            time.sleep(0.15)
+            
+            try:
+                win32api.SetCursorPos((0, 0))
+            except:
+                pass
+            
+            time.sleep(scan_delay_after_click)
         
         detected_options = scan_options(position=(row, col))
         
@@ -946,8 +980,6 @@ def scan_loop():
             break
         else:
             print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
-            if attempt == 0:
-                continue
     
     if detected_options:
         option_text = ", ".join(detected_options)
@@ -964,10 +996,10 @@ def scan_loop():
                 click_position(btn_pos)
                 scan_state["total_locked"] += 1
                 print(f"🔐 잠금 완료")
-                time.sleep(0.15)
+                time.sleep(0.1)  # 0.15 -> 0.1 최적화
             else:
                 print(f"⚠️ 잠금 버튼 찾기 실패 - 버튼 재탐색")
-                time.sleep(0.1)
+                time.sleep(0.08)  # 0.1 -> 0.08 최적화
                 btn_pos = find_lock_button()
                 if btn_pos:
                     click_position(btn_pos)
@@ -1025,7 +1057,7 @@ def toggle_auto_scan():
     auto_detect_grid()
     
     if scan_region and first_item_pos:
-        # ✅ 사전 스캔 실행
+        # 사전 스캔 실행
         total, locked = pre_scan_all_locks()
         
         # 잠금 가능한 아이템이 없으면 종료
@@ -1057,11 +1089,11 @@ def on_key_press(key):
 keyboard.Listener(on_press=on_key_press).start()
 
 # ============================================================
-# UI 구성 (최소화 버전)
+# UI 구성
 # ============================================================
 root = tk.Tk()
 root.title("Endfield Auto Scanner")
-root.geometry("600x600")
+root.geometry("600x550")
 root.attributes("-topmost", True)
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
@@ -1070,7 +1102,7 @@ f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
 # 제목
-tk.Label(f, text="엔드필드 자동 잠금", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
+tk.Label(f, text="엔드필드 자동 잠금 ⚡", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
 
 # 자동 스캔 버튼
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
@@ -1094,8 +1126,8 @@ option_label.pack(fill="x", pady=3)
 match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w", font=("Malgun Gothic", 9))
 match_label.pack(fill="x", pady=3)
 
-# 도움말 (단축키만)
-help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지", 
+# 도움말
+help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지  |  ⚡ 영역 3분할 병렬 OCR", 
                       bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
 help_label.pack(pady=(10, 0))
 

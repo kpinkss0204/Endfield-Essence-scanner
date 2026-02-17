@@ -211,7 +211,34 @@ def normalize_korean_text(text):
     if not clean:
         return None
     
-    # 2. 접미사 제거 (증가 관련 오타 모두 처리)
+    # ⭐ 1-1. 자모 분리 케이스 직접 매핑
+    # OCR이 "요 율", "효 율" 식으로 자모를 분리해서 인식하는 경우 대응
+    # clean에서 공백 제거 전 원본 텍스트 기준으로 패턴 매칭
+    raw_no_space = re.sub(r'[^\uAC00-\uD7A3\s]', '', text).strip()
+    
+    # "요 율" → 효율, "효 율" → 효율, "호 율" → 효율
+    if re.search(r'[효요호]\s*[율률]', raw_no_space):
+        if re.search(r'궁\s*[극국]\s*기', raw_no_space) and re.search(r'충\s*[전젼]', raw_no_space):
+            return "궁극기 충전 효율"
+        elif re.search(r'치\s*[유우]', raw_no_space):
+            return "치유 효율"
+        else:
+            return "효율"
+    
+    # ⭐ 2. "효율" 키워드 우선 체크 (접미사 제거 전, OCR 오타 포함)
+    # 효율 오타 목록: 효율, 요율, 효윤, 요윤, 호율 등 (자모분리 재결합 포함)
+    if re.search(r'[효요호][율률롤윤]', clean):
+        # "궁극기 충전 효율" 체크
+        if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
+            return "궁극기 충전 효율"
+        # "치유 효율" 체크
+        elif re.search(r'치[유우]', clean):
+            return "치유 효율"
+        # 단독 "효율"
+        else:
+            return "효율"
+    
+    # 3. 접미사 제거 (증가 관련 오타 모두 처리)
     clean = re.sub(r'(증가|흐가|쿨가|흐쿨|골흐|콜흐|툴골|즘가|승가|즐|증|가|중)$', '', clean)
     
     # 공백 다시 제거
@@ -220,11 +247,9 @@ def normalize_korean_text(text):
     if not clean:
         return None
     
-    # ⭐ 3. 긴 단어 우선 매칭 (겹침 방지) - 순서 중요!
-    
-    # ⭐⭐ "궁극기 충전 효율" - 모든 키워드가 있어야 매칭 (가장 먼저 체크)
+    # ⭐⭐ 4. "궁극기 충전 효율" - 모든 키워드가 있어야 매칭 (가장 먼저 체크)
     if (re.search(r'궁[극국귱]', clean) and 
-        re.search(r'(충[전젼]|획득)', clean)) :
+        re.search(r'(충[전젼]|획득)', clean)):
         return "궁극기 충전 효율"
     
     # "주요 능력치"
@@ -236,10 +261,10 @@ def normalize_korean_text(text):
         return "치확"
     
     # "치유 효율" - "치유"와 "효율" 모두 있어야 매칭
-    if re.search(r'치[유우]', clean) and re.search(r'효[율률]', clean):
+    if re.search(r'치[유우]', clean) and re.search(r'[효요][율률롤윤]', clean):
         return "치유 효율"
     
-    # ⭐⭐ 4. 아츠 관련 (스탯보다 먼저 체크 - '지능'과 충돌 방지)
+    # ⭐⭐ 5. 아츠 관련 (스탯보다 먼저 체크 - '지능'과 충돌 방지)
     # "오리지늄" 키워드가 있으면 무조건 아츠 관련
     if re.search(r'오리지[늄눔넘념]|오리즈|오리츠', clean):
         return "아츠 강도"
@@ -252,7 +277,7 @@ def normalize_korean_text(text):
     if re.search(r'아[츠즈측].*피[해혜]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'피[해혜]', clean)):
         return "아츠 피해"
     
-    # 5. 핵심 스탯 오타 보정
+    # 6. 핵심 스탯 오타 보정
     # "공격력"
     if re.search(r'걱럭|격턱|공[격걱]|격력|공력|^럭$|^공$|콜굴|콜골|휼콜|드룰', clean):
         return "공격력"
@@ -277,7 +302,7 @@ def normalize_korean_text(text):
     if re.search(r'^힘$|흐임|그[룹룰옵루]|^[으우]루$|^루$', clean):
         return "힘"
     
-    # 6. 속성 피해
+    # 7. 속성 피해
     if re.search(r'물[리이]|그리', clean) and re.search(r'피[해혜]', clean):
         return "물리 피해"
     if re.search(r'냉[기기]', clean) and re.search(r'피[해혜]', clean):
@@ -289,7 +314,7 @@ def normalize_korean_text(text):
     if re.search(r'자[연현]', clean) and re.search(r'피[해혜]', clean):
         return "자연 피해"
     
-    # 7. 서브 옵션 (weapons_db 기준)
+    # 8. 서브 옵션 (weapons_db 기준)
     if re.search(r'방[출줄쥴]|밤출', clean):
         return "방출"
     if re.search(r'흐[름륾]|으름', clean):
@@ -317,12 +342,7 @@ def normalize_korean_text(text):
     if re.search(r'의[료로]', clean):
         return "의료"
     
-    # ⭐ "효율"은 가장 마지막에 체크 (다른 복합어 매칭 후)
-    # 단, 앞에서 이미 "궁극기 충전 효율", "치유 효율" 체크 완료
-    if re.search(r'효[율률]', clean):
-        return "효율"
-    
-    # 8. 매칭 실패 시 None 반환
+    # 9. 매칭 실패 시 None 반환
     return None
 
 def find_game_window():
@@ -837,6 +857,10 @@ def scan_options_single(region, position=None):
             config=TESSERACT_CONFIG
         )
         
+        # ⭐ 디버깅: 원본 OCR 결과 출력
+        if text.strip():
+            print(f"🔍 원본 OCR: {repr(text.strip())}")
+        
         found_keywords = []
         seen = set()
         
@@ -853,10 +877,26 @@ def scan_options_single(region, position=None):
                 if not line:
                     continue
                 
+                # ⭐ 자모 분리 OCR 대응: 공백 제거 후 통합 문자열로도 시도
+                # 예: "ㅇ 요 율" → "요율" 로 처리
+                merged_line = re.sub(r'\s+', '', line)
+                
                 normalized = normalize_korean_text(line)
+                
+                # 원본 라인에서 실패 시 공백 제거 버전으로 재시도
+                if not normalized:
+                    normalized = normalize_korean_text(merged_line)
                 
                 if normalized:
                     all_keywords.append(normalized)
+            
+            # ⭐ 전체 텍스트를 하나로 합쳐서도 시도 (멀티라인 복합어 대응)
+            full_text_merged = re.sub(r'\s+', '', text)
+            full_normalized = normalize_korean_text(full_text_merged)
+            # 전체 합친 결과가 복합어면 all_keywords에 없는 경우 추가
+            if full_normalized in compound_keywords and full_normalized not in all_keywords:
+                all_keywords.insert(0, full_normalized)
+                print(f"   ⭐ 전체 합산 복합어 감지: {full_normalized}")
             
             # 2단계: 복합어 우선 처리
             for keyword in all_keywords:

@@ -3,13 +3,15 @@
 block_cipher = None
 
 a = Analysis(
-    ['endfield_essence_scanner.py'],  # ← 실제 파이썬 파일명
+    ['endfield_essence_scanner.py'],
     pathex=[],
     binaries=[],
     datas=[
         ('weapons_db.json', '.'),
         ('lock_template.png', '.'),
-        ('lock_button_template.png', '.')
+        ('lock_button_template.png', '.'),
+        ('dispose_template.png', '.'),
+        ('dispose_button_template.png', '.'),
     ],
     hiddenimports=[
         'PIL._tkinter_finder',
@@ -41,20 +43,20 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    [],  # ✅ 비우기 (onedir 모드)
-    exclude_binaries=True,  # ✅ 필수
+    [],
+    exclude_binaries=True,
     name='EndField_Auto_Scanner',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # ✅ 속도 최적화
-    console=False,  # False: 콘솔 숨김 / True: 디버깅용
+    upx=False,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None  # 아이콘 있으면: icon='icon.ico'
+    icon=None
 )
 
 coll = COLLECT(

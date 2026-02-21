@@ -249,7 +249,7 @@ def normalize_korean_text(text):
     if re.search(r'생[명멍먕]', clean):
         return "생명력"
     if re.search(r'민[첩접쳡]', clean):
-        return "민첩성"
+        return "민첩"
     if re.search(r'지[능늄]|시능|자능', clean):
         return "지능"
     if re.search(r'의[지자]|으지|휼|외지|의치', clean):

@@ -30,7 +30,6 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 def check_tesseract_language():
     """Tesseract 한국어 언어팩 설치 여부 확인"""
     try:
-        # 테스트 이미지로 한국어 OCR 시도
         test_img = Image.new('RGB', (100, 30), color='white')
         pytesseract.image_to_string(test_img, lang='kor', config=r'--psm 6')
         print("✅ Tesseract 한국어 언어팩 확인 완료")
@@ -45,7 +44,6 @@ def check_tesseract_language():
             print(f"⚠️ Tesseract 초기화 오류: {error_msg}")
             return 'eng', r'--oem 3 --psm 6'
 
-# 언어팩 확인 (프로그램 시작 시 1회)
 TESSERACT_LANG, TESSERACT_CONFIG = check_tesseract_language()
 USE_KOREAN_OCR = (TESSERACT_LANG == 'kor')
 
@@ -55,12 +53,9 @@ USE_KOREAN_OCR = (TESSERACT_LANG == 'kor')
 def resource_path(relative_path):
     """PyInstaller로 빌드된 exe에서 리소스 파일 경로 찾기"""
     try:
-        # PyInstaller가 생성한 임시 폴더
         base_path = sys._MEIPASS
     except Exception:
-        # 일반 Python 실행 시
         base_path = os.path.abspath(".")
-    
     return os.path.join(base_path, relative_path)
 
 # ============================================================
@@ -79,144 +74,141 @@ def load_json(filename):
         messagebox.showerror("파일 오류", f"{filename} 파일의 JSON 형식이 올바르지 않습니다.")
         return None
 
-# 무기 데이터베이스 로드
 WEAPON_DB = load_json('weapons_db.json')
-
-# 로드 실패 시 프로그램 종료
 if WEAPON_DB is None:
     print("❌ weapons_db.json 로드 실패. 프로그램을 종료합니다.")
     exit(1)
 
-# ✅ 해상도별 프리셋 (base_width x base_height: (start_x, start_y, spacing_x, spacing_y))
+# ✅ 해상도별 프리셋
 RESOLUTION_PRESETS = {
-    (1280, 768): (82, 97, 105, 110),
+    (1280, 768):  (82,  97,  105, 110),
     (1920, 1080): (123, 145, 158, 165),
-    (1600, 900): (102, 121, 131, 137),
+    (1600, 900):  (102, 121, 131, 137),
     (2560, 1440): (164, 194, 210, 220),
-    (1366, 768): (87, 97, 112, 110),
+    (1366, 768):  (87,  97,  112, 110),
 }
 
 # 전역 변수
-scan_region = None
-first_item_pos = None
-game_window_rect = None
-current_scale = 1.0
-lock_button_pos = None
-lock_template = None 
-lock_button_template = None 
+scan_region         = None
+first_item_pos      = None
+game_window_rect    = None
+current_scale       = 1.0
+lock_button_pos     = None
+lock_template       = None
+lock_button_template    = None
+dispose_template        = None
+dispose_button_template = None
 grid_spacing = (105, 110)
 
 GRID_COLS = 4
 GRID_ROWS = 6
 
 auto_scan_enabled = False
-scan_state = {"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0}
+scan_state = {
+    "current_row": 0,
+    "current_col": 0,
+    "total_scanned": 0,
+    "total_locked": 0,
+    "total_disposed": 0,
+}
 
-# ✅ 스캔 간격 최적화 (더 짧게)
-scan_delay_after_click = 0.4  # 아이템 클릭 후 대기 시간 (0.55 -> 0.4)
-scan_delay_between_items = 0.2  # 다음 아이템으로 넘어갈 때 대기 시간 (0.30 -> 0.2)
+scan_delay_after_click    = 0.4
+scan_delay_between_items  = 0.2
 
-# ✅ 잠금 상태 캐시 (사전 스캔 결과 저장)
+# ✅ 잠금/폐기 상태 캐시
 lock_status_cache = {}
 
-# ✅ OCR 캐시
-ocr_cache = {}
+ocr_cache  = {}
 cache_lock = threading.Lock()
 
-# ✅ 스캔 결과 로그 저장
-scan_log = []
+scan_log      = []
 log_file_path = None
 
 def init_log_file():
-    """로그 파일 경로 초기화 (타임스탬프 포함)"""
     global log_file_path
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     log_file_path = f"scan_result_{timestamp}.txt"
-    
+
 def save_scan_log():
-    """스캔 로그를 txt 파일로 저장"""
     if not log_file_path or not scan_log:
         return
-    
     try:
         with open(log_file_path, 'w', encoding='utf-8') as f:
-            f.write("="*60 + "\n")
+            f.write("=" * 60 + "\n")
             f.write("엔드필드 자동 스캔 결과\n")
             f.write(f"스캔 시간: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("="*60 + "\n\n")
-            
-            total_scanned = len([log for log in scan_log if log['status'] != 'empty'])
-            total_locked = len([log for log in scan_log if log['locked']])
-            total_skipped = len([log for log in scan_log if log['status'] == 'pre_locked'])
-            
-            f.write(f"📊 요약\n")
-            f.write(f"  - 스캔한 아이템: {total_scanned}개\n")
-            f.write(f"  - 새로 잠금: {total_locked}개\n")
-            f.write(f"  - 이미 잠금됨: {total_skipped}개\n")
-            f.write("\n" + "="*60 + "\n\n")
-            
-            for log_entry in scan_log:
-                row, col = log_entry['position']
+            f.write("=" * 60 + "\n\n")
+
+            total_scanned  = len([l for l in scan_log if l['status'] not in ('empty',)])
+            total_locked   = len([l for l in scan_log if l['locked']])
+            total_disposed = len([l for l in scan_log if l.get('disposed', False)])
+            total_pre_locked   = len([l for l in scan_log if l['status'] == 'pre_locked'])
+            total_pre_disposed = len([l for l in scan_log if l['status'] == 'pre_disposed'])
+
+            f.write("📊 요약\n")
+            f.write(f"  - 스캔한 아이템  : {total_scanned}개\n")
+            f.write(f"  - 새로 잠금      : {total_locked}개\n")
+            f.write(f"  - 새로 폐기      : {total_disposed}개\n")
+            f.write(f"  - 이미 잠금됨    : {total_pre_locked}개\n")
+            f.write(f"  - 이미 폐기됨    : {total_pre_disposed}개\n")
+            f.write("\n" + "=" * 60 + "\n\n")
+
+            for entry in scan_log:
+                row, col = entry['position']
                 f.write(f"[{row},{col}] ")
-                
-                if log_entry['status'] == 'empty':
+
+                if entry['status'] == 'empty':
                     f.write("빈 슬롯\n\n")
                     continue
-                
-                if log_entry['status'] == 'pre_locked':
+                if entry['status'] == 'pre_locked':
                     f.write("🔒 이미 잠금됨 (건너뜀)\n\n")
                     continue
-                
-                if not log_entry['options']:
+                if entry['status'] == 'pre_disposed':
+                    f.write("🗑️ 이미 폐기됨 (건너뜀)\n\n")
+                    continue
+                if not entry['options']:
                     f.write("❌ OCR 실패\n\n")
                     continue
-                
-                f.write(f"\n옵션: {', '.join(log_entry['options'])}\n")
-                
-                if log_entry['matches']:
-                    f.write(f"매칭: {', '.join(log_entry['matches'])}\n")
-                    if log_entry['locked']:
+
+                f.write(f"\n옵션: {', '.join(entry['options'])}\n")
+
+                if entry['matches']:
+                    f.write(f"매칭: {', '.join(entry['matches'])}\n")
+                    if entry['locked']:
                         f.write("결과: ✅ 잠금 완료\n")
                     else:
                         f.write("결과: ⚠️ 잠금 실패\n")
                 else:
                     f.write("매칭: 없음\n")
-                    f.write("결과: - (잠금 안함)\n")
-                
+                    if entry.get('disposed', False):
+                        f.write("결과: 🗑️ 폐기 완료\n")
+                    elif entry.get('dispose_failed', False):
+                        f.write("결과: ⚠️ 폐기 실패\n")
+                    else:
+                        f.write("결과: - (잠금/폐기 안함)\n")
                 f.write("\n")
-            
-            f.write("="*60 + "\n")
-            f.write("스캔 완료\n")
-        
+
+            f.write("=" * 60 + "\n스캔 완료\n")
+
         print(f"✅ 로그 파일 저장 완료: {log_file_path}")
         return log_file_path
-        
     except Exception as e:
         print(f"❌ 로그 저장 실패: {str(e)}")
         return None
 
 # ============================================================
-# 한국어 텍스트 보정 함수 (weapons_db.json 기반)
+# 한국어 텍스트 보정 함수
 # ============================================================
 def normalize_korean_text(text):
-    """
-    OCR로 인식된 한국어 텍스트를 정규화하여 weapons_db.json의 옵션과 매칭
-    """
     import re
-    
-    # 1. 공백 제거 및 한글만 추출
+
     clean = re.sub(r'\s+', '', text)
     clean = re.sub(r'[^\uAC00-\uD7A3]', '', clean)
-    
     if not clean:
         return None
-    
-    # ⭐ 1-1. 자모 분리 케이스 직접 매핑
-    # OCR이 "요 율", "효 율" 식으로 자모를 분리해서 인식하는 경우 대응
-    # clean에서 공백 제거 전 원본 텍스트 기준으로 패턴 매칭
+
     raw_no_space = re.sub(r'[^\uAC00-\uD7A3\s]', '', text).strip()
-    
-    # "요 율" → 효율, "효 율" → 효율, "호 율" → 효율
+
     if re.search(r'[효요호]\s*[율률]', raw_no_space):
         if re.search(r'궁\s*[극국]\s*기', raw_no_space) and re.search(r'충\s*[전젼]', raw_no_space):
             return "궁극기 충전 효율"
@@ -224,85 +216,46 @@ def normalize_korean_text(text):
             return "치유 효율"
         else:
             return "효율"
-    
-    # ⭐ 2. "효율" 키워드 우선 체크 (접미사 제거 전, OCR 오타 포함)
-    # 효율 오타 목록: 효율, 요율, 효윤, 요윤, 호율 등 (자모분리 재결합 포함)
+
     if re.search(r'[효요호][율률롤윤]', clean):
-        # "궁극기 충전 효율" 체크
         if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
             return "궁극기 충전 효율"
-        # "치유 효율" 체크
         elif re.search(r'치[유우]', clean):
             return "치유 효율"
-        # 단독 "효율"
         else:
             return "효율"
-    
-    # 3. 접미사 제거 (증가 관련 오타 모두 처리)
+
     clean = re.sub(r'(증가|흐가|쿨가|흐쿨|골흐|콜흐|툴골|즘가|승가|즐|증|가|중)$', '', clean)
-    
-    # 공백 다시 제거
     clean = re.sub(r'\s+', '', clean)
-    
     if not clean:
         return None
-    
-    # ⭐⭐ 4. "궁극기 충전 효율" - 모든 키워드가 있어야 매칭 (가장 먼저 체크)
-    if (re.search(r'궁[극국귱]', clean) and 
-        re.search(r'(충[전젼]|획득)', clean)):
+
+    if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
         return "궁극기 충전 효율"
-    
-    # "주요 능력치"
     if re.search(r'주[요오]|능[력럭]', clean):
         return "주요 능력치"
-    
-    # "치명타 확률" → "치확" (weapons_db 표기)
     if re.search(r'치[명망]|확[률를]', clean) or re.search(r'^치확$', clean):
         return "치확"
-    
-    # "치유 효율" - "치유"와 "효율" 모두 있어야 매칭
     if re.search(r'치[유우]', clean) and re.search(r'[효요][율률롤윤]', clean):
         return "치유 효율"
-    
-    # ⭐⭐ 5. 아츠 관련 (스탯보다 먼저 체크 - '지능'과 충돌 방지)
-    # "오리지늄" 키워드가 있으면 무조건 아츠 관련
     if re.search(r'오리지[늄눔넘념]|오리즈|오리츠', clean):
         return "아츠 강도"
-    
-    # "아츠 강도"
     if re.search(r'아[츠즈측].*강[도돠]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'강[도돠]', clean)):
         return "아츠 강도"
-    
-    # "아츠 피해"
     if re.search(r'아[츠즈측].*피[해혜]', clean) or (re.search(r'아[츠즈측]', clean) and re.search(r'피[해혜]', clean)):
         return "아츠 피해"
-    
-    # 6. 핵심 스탯 오타 보정
-    # "공격력"
     if re.search(r'걱럭|격턱|공[격걱]|격력|공력|^럭$|^공$|콜굴|콜골|휼콜|드룰', clean):
         return "공격력"
-    
-    # "생명력"
     if re.search(r'생[명멍먕]', clean):
         return "생명력"
-    
-    # "민첩성" (weapons_db 표기)
     if re.search(r'민[첩접쳡]', clean):
         return "민첩성"
-    
-    # "지능" (⭐ 아츠 체크 후에 매칭)
     if re.search(r'지[능늄]|시능|자능', clean):
         return "지능"
-    
-    # "의지"
     if re.search(r'의[지자]|으지|휼|외지|의치', clean):
         return "의지"
-    
-    # "힘"
     if re.search(r'^힘$|흐임|그[룹룰옵루]|^[으우]루$|^루$', clean):
         return "힘"
-    
-    # 7. 속성 피해
     if re.search(r'물[리이]|그리', clean) and re.search(r'피[해혜]', clean):
         return "물리 피해"
     if re.search(r'냉[기기]', clean) and re.search(r'피[해혜]', clean):
@@ -313,8 +266,6 @@ def normalize_korean_text(text):
         return "전기 피해"
     if re.search(r'자[연현]', clean) and re.search(r'피[해혜]', clean):
         return "자연 피해"
-    
-    # 8. 서브 옵션 (weapons_db 기준)
     if re.search(r'방[출줄쥴]|밤출', clean):
         return "방출"
     if re.search(r'흐[름륾]|으름', clean):
@@ -341,310 +292,432 @@ def normalize_korean_text(text):
         return "사기"
     if re.search(r'의[료로]', clean):
         return "의료"
-    
-    # 9. 매칭 실패 시 None 반환
+
     return None
 
+# ============================================================
+# 게임 창 감지
+# ============================================================
 def find_game_window():
-    """게임 창을 찾아서 영역 반환"""
     global game_window_rect, current_scale
-    
+
     def enum_windows_callback(hwnd, windows):
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
             if title and ('scanner' not in title.lower() and 'auto' not in title.lower()):
                 if 'endfield' in title.lower() or '엔드필드' in title or '明日方舟' in title:
                     rect = win32gui.GetWindowRect(hwnd)
-                    width = rect[2] - rect[0]
+                    width  = rect[2] - rect[0]
                     height = rect[3] - rect[1]
                     if width >= 800 and height >= 600:
                         windows.append((hwnd, title, width, height))
                         print(f"🔍 발견된 게임 창: '{title}' ({width}x{height})")
-    
+
     windows = []
     win32gui.EnumWindows(enum_windows_callback, windows)
-    
     print(f"📊 총 {len(windows)}개의 게임 창 발견")
-    
+
     if not windows:
         status_label.config(text="❌ 게임 창을 찾을 수 없습니다", fg="#e74c3c")
-        print("⚠️ 게임 창 검색 실패")
         return False
-    
+
     windows.sort(key=lambda x: x[2] * x[3], reverse=True)
     hwnd, title, width, height = windows[0]
-    
     print(f"✅ 선택된 창: '{title}' ({width}x{height})")
-    
+
     rect = win32gui.GetWindowRect(hwnd)
-    
     try:
         client_rect = win32gui.GetClientRect(hwnd)
-        client_width = client_rect[2]
-        client_height = client_rect[3]
-        client_pos = win32gui.ClientToScreen(hwnd, (0, 0))
-        
+        client_pos  = win32gui.ClientToScreen(hwnd, (0, 0))
         game_window_rect = {
-            'x': client_pos[0],
-            'y': client_pos[1],
-            'width': client_width,
-            'height': client_height
+            'x': client_pos[0], 'y': client_pos[1],
+            'width': client_rect[2], 'height': client_rect[3],
         }
     except:
         x, y, x2, y2 = rect
-        title_bar_height = 30
-        border_width = 8
-        
         game_window_rect = {
-            'x': x + border_width,
-            'y': y + title_bar_height,
-            'width': width - border_width * 2,
-            'height': height - title_bar_height - border_width
+            'x': x + 8, 'y': y + 30,
+            'width': width - 16, 'height': height - 38,
         }
-    
-    base_width = 1280
-    base_height = 768
-    current_scale = game_window_rect['width'] / base_width
-    
-    print(f"🎮 게임 창 최종 선택: {title}")
-    print(f"📏 클라이언트 영역: ({game_window_rect['x']}, {game_window_rect['y']}) {game_window_rect['width']}x{game_window_rect['height']}")
-    print(f"📐 스케일: {current_scale:.2f}x")
-    
+
+    current_scale = game_window_rect['width'] / 1280
+    print(f"📏 클라이언트: ({game_window_rect['x']},{game_window_rect['y']}) "
+          f"{game_window_rect['width']}x{game_window_rect['height']} | 스케일: {current_scale:.2f}x")
     return True
 
 def get_scaled_value(base_value):
     return int(base_value * current_scale)
 
 def click_position(pos):
-    if not pos: return False
+    if not pos:
+        return False
     x, y = pos
     try:
-        # 1. 마우스 이동
         win32api.SetCursorPos((x, y))
-        time.sleep(0.05)  # 0.1 -> 0.05 최적화
-        
-        # 2. 클릭 다운
+        time.sleep(0.05)
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.03)  # 0.05 -> 0.03 최적화
-        
-        # 3. 클릭 업
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.03)  # 0.05 -> 0.03 최적화
-        
+        time.sleep(0.03)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
+        time.sleep(0.03)
         print(f"   🖱️ 클릭 완료: ({x}, {y})")
         return True
     except Exception as e:
         print(f"   ❌ 클릭 실패: {str(e)}")
         return False
 
+# ============================================================
+# 황색 아이템 감지
+# ============================================================
 def detect_yellow_items():
     try:
         if game_window_rect:
             bbox = (
-                game_window_rect['x'],
-                game_window_rect['y'],
+                game_window_rect['x'], game_window_rect['y'],
                 game_window_rect['x'] + game_window_rect['width'],
-                game_window_rect['y'] + game_window_rect['height']
+                game_window_rect['y'] + game_window_rect['height'],
             )
-            screen = np.array(ImageGrab.grab(bbox=bbox))
-            offset_x, offset_y = game_window_rect['x'], game_window_rect['y']
+            screen   = np.array(ImageGrab.grab(bbox=bbox))
+            offset_x = game_window_rect['x']
+            offset_y = game_window_rect['y']
         else:
-            screen = np.array(ImageGrab.grab())
-            offset_x, offset_y = 0, 0
-        
-        hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
+            screen   = np.array(ImageGrab.grab())
+            offset_x = offset_y = 0
+
+        hsv          = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
         lower_yellow = np.array([15, 150, 150])
         upper_yellow = np.array([35, 255, 255])
-        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        detected_points = []
-        min_width = get_scaled_value(40)
-        max_height = get_scaled_value(15)
-        y_offset = get_scaled_value(60)
-        
+        mask         = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _  = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        detected     = []
+        min_width    = get_scaled_value(40)
+        max_height   = get_scaled_value(15)
+        y_offset     = get_scaled_value(60)
+
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             if w > min_width and h < max_height:
-                item_center = (offset_x + x + w//2, offset_y + y - y_offset)
-                detected_points.append(item_center)
-        
-        return detected_points
-    except: 
+                detected.append((offset_x + x + w // 2, offset_y + y - y_offset))
+        return detected
+    except:
         return []
 
 def is_item_at_position(target_pos, tolerance=None):
     if tolerance is None:
         tolerance = get_scaled_value(70)
-    
-    detected_items = detect_yellow_items()
-    if not detected_items:
-        return False
-    for item_pos in detected_items:
-        if abs(item_pos[0] - target_pos[0]) < tolerance and abs(item_pos[1] - target_pos[1]) < tolerance:
+    for item_pos in detect_yellow_items():
+        if (abs(item_pos[0] - target_pos[0]) < tolerance and
+                abs(item_pos[1] - target_pos[1]) < tolerance):
             return True
     return False
 
+# ============================================================
+# 템플릿 로드 (잠금 + 폐기 모두 로드)
+# ============================================================
 def load_lock_template():
-    global lock_template, lock_button_template
-    
-    lock_template_path = resource_path("lock_template.png")
-    lock_button_template_path = resource_path("lock_button_template.png")
-    
-    if os.path.exists(lock_template_path):
-        lock_template = cv2.imread(lock_template_path, cv2.IMREAD_GRAYSCALE)
+    global lock_template, lock_button_template, dispose_template, dispose_button_template
+
+    path = resource_path("lock_template.png")
+    if os.path.exists(path):
+        lock_template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         print("✅ lock_template.png 로드 완료")
     else:
         print("❌ lock_template.png 없음")
-        
-    if os.path.exists(lock_button_template_path):
-        lock_button_template = cv2.imread(lock_button_template_path, cv2.IMREAD_GRAYSCALE)
+
+    path = resource_path("lock_button_template.png")
+    if os.path.exists(path):
+        lock_button_template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         print("✅ lock_button_template.png 로드 완료")
     else:
         print("❌ lock_button_template.png 없음")
 
+    path = resource_path("dispose_template.png")
+    if os.path.exists(path):
+        dispose_template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        print("✅ dispose_template.png 로드 완료")
+    else:
+        print("⚠️ dispose_template.png 없음 (폐기 감지 비활성)")
+
+    path = resource_path("dispose_button_template.png")
+    if os.path.exists(path):
+        dispose_button_template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        print("✅ dispose_button_template.png 로드 완료")
+    else:
+        print("⚠️ dispose_button_template.png 없음 (자동 폐기 비활성)")
+
+# ============================================================
+# 잠금 버튼 찾기
+# ============================================================
 def find_lock_button():
-    global lock_button_template
-    if lock_button_template is None: return None
+    if lock_button_template is None:
+        return None
     try:
         if game_window_rect:
-            screen_width = game_window_rect['x'] + game_window_rect['width']
-            screen_height = game_window_rect['y'] + game_window_rect['height']
             search_bbox = (
                 game_window_rect['x'] + game_window_rect['width'] // 2,
                 game_window_rect['y'],
-                screen_width,
-                screen_height
+                game_window_rect['x'] + game_window_rect['width'],
+                game_window_rect['y'] + game_window_rect['height'],
             )
         else:
             screen = ImageGrab.grab()
-            screen_width = screen.width
-            search_bbox = (screen_width // 2, 0, screen_width, screen.height)
-        
-        search_img = ImageGrab.grab(bbox=search_bbox)
-        search_gray = cv2.cvtColor(np.array(search_img), cv2.COLOR_RGB2GRAY)
-        
-        if current_scale != 1.0:
-            scaled_w = int(lock_button_template.shape[1] * current_scale)
-            scaled_h = int(lock_button_template.shape[0] * current_scale)
-            scaled_template = cv2.resize(lock_button_template, (scaled_w, scaled_h))
-        else:
-            scaled_template = lock_button_template
-        
-        result = cv2.matchTemplate(search_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        if max_val >= 0.7:
-            h, w = scaled_template.shape
-            return (search_bbox[0] + max_loc[0] + w // 2, search_bbox[1] + max_loc[1] + h // 2)
-        return None
-    except: return None
+            search_bbox = (screen.width // 2, 0, screen.width, screen.height)
 
-def is_item_locked_template(item_pos):
-    global lock_template
-    if lock_template is None:
-        return False
-    
-    try:
-        cell_half_w = int(grid_spacing[0] * 0.45)
-        cell_half_h = int(grid_spacing[1] * 0.45)
-        icon_offset_x = -int(grid_spacing[0] * 0.38)
-        icon_offset_y = int(grid_spacing[1] * 0.25)
-
-        icon_center_x = item_pos[0] + icon_offset_x
-        icon_center_y = item_pos[1] + icon_offset_y
-
-        search_x1 = icon_center_x - cell_half_w
-        search_y1 = icon_center_y - cell_half_h
-        search_x2 = icon_center_x + cell_half_w
-        search_y2 = icon_center_y + cell_half_h
-
-        search_x1 = max(0, search_x1)
-        search_y1 = max(0, search_y1)
-        search_bbox = (search_x1, search_y1, search_x2, search_y2)
-
-        if (search_x2 - search_x1) < 10 or (search_y2 - search_y1) < 10:
-            return False
-
-        search_img = ImageGrab.grab(bbox=search_bbox)
-        search_gray = cv2.cvtColor(np.array(search_img), cv2.COLOR_RGB2GRAY)
-
-        if current_scale != 1.0:
-            scaled_w = max(1, int(lock_template.shape[1] * current_scale))
-            scaled_h = max(1, int(lock_template.shape[0] * current_scale))
-            scaled_template = cv2.resize(lock_template, (scaled_w, scaled_h))
-        else:
-            scaled_template = lock_template
-
-        if (scaled_template.shape[1] > search_gray.shape[1] or
-                scaled_template.shape[0] > search_gray.shape[0]):
-            return False
-
-        result = cv2.matchTemplate(search_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+        search_gray = cv2.cvtColor(np.array(ImageGrab.grab(bbox=search_bbox)), cv2.COLOR_RGB2GRAY)
+        tmpl = _scale_template(lock_button_template)
+        result = cv2.matchTemplate(search_gray, tmpl, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val >= 0.7:
+            h, w = tmpl.shape
+            return (search_bbox[0] + max_loc[0] + w // 2,
+                    search_bbox[1] + max_loc[1] + h // 2)
+        return None
+    except:
+        return None
 
-        is_locked = max_val >= 0.78
+# ============================================================
+# ✅ 폐기 버튼 찾기 (우측 빨간 휴지통 버튼)
+# ============================================================
+def find_dispose_button():
+    if dispose_button_template is None:
+        return None
+    try:
+        if game_window_rect:
+            search_bbox = (
+                game_window_rect['x'] + game_window_rect['width'] // 2,
+                game_window_rect['y'],
+                game_window_rect['x'] + game_window_rect['width'],
+                game_window_rect['y'] + game_window_rect['height'],
+            )
+        else:
+            screen = ImageGrab.grab()
+            search_bbox = (screen.width // 2, 0, screen.width, screen.height)
 
-        return is_locked
+        search_img  = np.array(ImageGrab.grab(bbox=search_bbox))
+        search_gray = cv2.cvtColor(search_img, cv2.COLOR_RGB2GRAY)
+        search_hsv  = cv2.cvtColor(search_img, cv2.COLOR_RGB2HSV)
+
+        THRESHOLD    = 0.55
+        SCALES       = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8]
+
+        best_val = -1
+        best_loc = None
+        best_wh  = None
+
+        for scale in SCALES:
+            tw = max(4, int(dispose_button_template.shape[1] * scale * current_scale))
+            th = max(4, int(dispose_button_template.shape[0] * scale * current_scale))
+            if tw > search_gray.shape[1] or th > search_gray.shape[0]:
+                continue
+            tmpl = cv2.resize(dispose_button_template, (tw, th))
+            result = cv2.matchTemplate(search_gray, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            if max_val > best_val:
+                best_val = max_val
+                best_loc = max_loc
+                best_wh  = (tw, th)
+
+        print(f"   🔍 폐기 버튼 멀티스케일 최고 점수: {best_val:.3f}")
+
+        if best_val >= THRESHOLD and best_loc is not None:
+            cx = search_bbox[0] + best_loc[0] + best_wh[0] // 2
+            cy = search_bbox[1] + best_loc[1] + best_wh[1] // 2
+            print(f"   ✅ 템플릿 매칭 성공: ({cx}, {cy})")
+            return (cx, cy)
+
+        # ── 색상 폴백 ──
+        print(f"   🎨 색상 기반 폴백 시도 (점수 {best_val:.3f} < {THRESHOLD})")
+        mask1 = cv2.inRange(search_hsv, np.array([0,   50, 60]), np.array([15,  255, 255]))
+        mask2 = cv2.inRange(search_hsv, np.array([160, 50, 60]), np.array([180, 255, 255]))
+        red_mask = cv2.bitwise_or(mask1, mask2)
+
+        kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN,  kernel)
+
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            best_cnt = max(contours, key=cv2.contourArea)
+            area     = cv2.contourArea(best_cnt)
+            if area > 20:
+                x, y, w, h = cv2.boundingRect(best_cnt)
+                cx = search_bbox[0] + x + w // 2
+                cy = search_bbox[1] + y + h // 2
+                print(f"   🎨 색상 폴백 성공: ({cx}, {cy}) 면적={area:.0f}")
+                return (cx, cy)
+
+        print(f"   ❌ 폐기 버튼 탐색 완전 실패")
+        return None
 
     except Exception as e:
+        print(f"   ❌ 폐기 버튼 탐색 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# ============================================================
+# 아이템 잠금 여부 확인 (템플릿 매칭)
+# ============================================================
+def _scale_template(template):
+    """current_scale 에 맞게 템플릿 크기 조정"""
+    if current_scale == 1.0:
+        return template
+    scaled_w = max(1, int(template.shape[1] * current_scale))
+    scaled_h = max(1, int(template.shape[0] * current_scale))
+    return cv2.resize(template, (scaled_w, scaled_h))
+
+def _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25):
+    """아이콘 주변 검색 영역 좌표 계산"""
+    half_w = int(grid_spacing[0] * 0.45)
+    half_h = int(grid_spacing[1] * 0.45)
+    cx = item_pos[0] + int(grid_spacing[0] * offset_x_ratio)
+    cy = item_pos[1] + int(grid_spacing[1] * offset_y_ratio)
+    x1 = max(0, cx - half_w)
+    y1 = max(0, cy - half_h)
+    x2 = cx + half_w
+    y2 = cy + half_h
+    return (x1, y1, x2, y2)
+
+def _match_template_in_region(bbox, template, threshold=0.78):
+    """지정 영역에서 템플릿 매칭 점수가 threshold 이상인지 반환"""
+    try:
+        if (bbox[2] - bbox[0]) < 10 or (bbox[3] - bbox[1]) < 10:
+            return False
+        search_gray = cv2.cvtColor(np.array(ImageGrab.grab(bbox=bbox)), cv2.COLOR_RGB2GRAY)
+        tmpl = _scale_template(template)
+        if tmpl.shape[1] > search_gray.shape[1] or tmpl.shape[0] > search_gray.shape[0]:
+            return False
+        result = cv2.matchTemplate(search_gray, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(result)
+        return max_val >= threshold
+    except:
         return False
 
+def is_item_locked_template(item_pos):
+    if lock_template is None:
+        return False
+    bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
+    return _match_template_in_region(bbox, lock_template, threshold=0.78)
+
+# ============================================================
+# ✅ 수정된 아이템 폐기 여부 확인
+#
+# 문제: dispose_template이 lock_template(잠금 아이콘)에도
+#       0.72~0.73 점수로 매칭되어 잠금 아이템을 폐기로 오인식
+#
+# 해결 방법 (3단계 검증):
+#   1. dispose_template threshold를 0.40 → 0.55로 상향 (1차 필터)
+#   2. lock_template과 교차검증:
+#      dispose 점수가 lock 점수보다 LOCK_MARGIN(0.08) 이상 높아야 통과
+#   3. 빨간색 픽셀 비율 검증:
+#      폐기 마크는 빨간색, 잠금 아이콘은 흰색/회색이므로
+#      빨간 픽셀이 5% 미만이면 폐기 마크 아님으로 최종 판단
+# ============================================================
+def is_item_disposed_template(item_pos):
+    """
+    아이템 슬롯 좌하단의 폐기(빨간 휴지통) 마크를 확인합니다.
+
+    ✅ 색상 기반 감지만 사용:
+      - 그레이스케일 템플릿 매칭은 lock/dispose 아이콘이 위치가 같아
+        점수가 항상 비슷하게 나와 구분 불가 → 완전히 제거
+      - 폐기 마크 = 빨간색, 잠금 아이콘 = 흰색/회색 이라는
+        색상 차이만으로 판단 (훨씬 신뢰성 높음)
+      - 아이콘 영역의 빨간 픽셀 수가 임계값 이상이면 폐기로 판단
+    """
+    # 아이콘 위치: 아이템 슬롯 좌하단 고정
+    bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
+
+    if (bbox[2] - bbox[0]) < 5 or (bbox[3] - bbox[1]) < 5:
+        return False
+
+    # 빨간 픽셀이 이 수 이상이면 폐기 마크로 판단
+    # (아이콘 크기에 비례 — 기본 영역 약 90×90px 기준 50픽셀)
+    RED_PIXEL_MIN = max(30, int(grid_spacing[0] * grid_spacing[1] * 0.005))
+
+    try:
+        region_img = np.array(ImageGrab.grab(bbox=bbox))
+        hsv        = cv2.cvtColor(region_img, cv2.COLOR_RGB2HSV)
+
+        # HSV 빨간색 범위 (색상환 양쪽 끝: 0~12도, 168~180도)
+        red_mask1 = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
+        red_mask2 = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
+        red_mask  = cv2.bitwise_or(red_mask1, red_mask2)
+
+        # 노이즈 제거
+        kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+
+        red_pixels   = cv2.countNonZero(red_mask)
+        total_pixels = region_img.shape[0] * region_img.shape[1]
+        red_ratio    = red_pixels / total_pixels if total_pixels > 0 else 0
+
+        print(f"   🎨 빨간 픽셀: {red_pixels}개 (최소:{RED_PIXEL_MIN}) 비율:{red_ratio:.3f}")
+
+        if red_pixels >= RED_PIXEL_MIN:
+            print(f"   ✅ 폐기 마크 감지 성공 (빨간 픽셀 {red_pixels}개)")
+            return True
+        else:
+            print(f"   ❌ 빨간 픽셀 부족 → 폐기 마크 없음")
+            return False
+
+    except Exception as e:
+        print(f"   ❌ 폐기 마크 탐색 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# ============================================================
+# 옵션 영역 자동 감지
+# ============================================================
 def auto_detect_option_region():
     global scan_region
     try:
         status_label.config(text="🔍 옵션 영역 찾는 중...", fg="#f39c12")
         root.update()
-        
+
         if game_window_rect:
             bbox = (
-                game_window_rect['x'],
-                game_window_rect['y'],
+                game_window_rect['x'], game_window_rect['y'],
                 game_window_rect['x'] + game_window_rect['width'],
-                game_window_rect['y'] + game_window_rect['height']
+                game_window_rect['y'] + game_window_rect['height'],
             )
-            screen = np.array(ImageGrab.grab(bbox=bbox))
-            offset_x, offset_y = game_window_rect['x'], game_window_rect['y']
+            screen   = np.array(ImageGrab.grab(bbox=bbox))
+            offset_x = game_window_rect['x']
+            offset_y = game_window_rect['y']
         else:
-            screen = np.array(ImageGrab.grab())
-            offset_x, offset_y = 0, 0
-        
+            screen   = np.array(ImageGrab.grab())
+            offset_x = offset_y = 0
+
         hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
-        lower_yellow = np.array([20, 100, 150])
-        upper_yellow = np.array([35, 255, 255])
-        yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        yellow_mask = cv2.inRange(hsv, np.array([20, 100, 150]), np.array([35, 255, 255]))
         contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        min_height = get_scaled_value(30)
-        max_width = get_scaled_value(20)
-        
-        yellow_bars = []
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if h > w and h > min_height and w < max_width:
-                yellow_bars.append((x, y, w, h))
-        
-        if len(yellow_bars) < 1:
-            print("⚠️ 옵션 영역 자동 감지 실패 - 기본값 사용")
+
+        min_h = get_scaled_value(30)
+        max_w = get_scaled_value(20)
+        bars  = [(x, y, w, h) for cnt in contours
+                 for x, y, w, h in [cv2.boundingRect(cnt)]
+                 if h > w and h > min_h and w < max_w]
+
+        if len(bars) < 1:
             scan_region = (
                 game_window_rect['x'] + get_scaled_value(560),
                 game_window_rect['y'] + get_scaled_value(200),
                 game_window_rect['x'] + get_scaled_value(820),
-                game_window_rect['y'] + get_scaled_value(450)
+                game_window_rect['y'] + get_scaled_value(450),
             )
             return
-            
-        yellow_bars.sort(key=lambda b: b[1])
-        top_3 = yellow_bars[:3]
-        
+
+        bars.sort(key=lambda b: b[1])
+        top3    = bars[:3]
         padding = get_scaled_value(15)
-        width_extend = get_scaled_value(240)
-        
-        min_x = offset_x + min(b[0] for b in top_3) + padding
-        min_y = offset_y + min(b[1] for b in top_3)
-        max_x = offset_x + max(b[0] + b[2] for b in top_3) + width_extend
-        max_y = offset_y + max(b[1] + b[3] for b in top_3)
-        
-        scan_region = (min_x, min_y, max_x, max_y)
+        ext_w   = get_scaled_value(240)
+
+        scan_region = (
+            offset_x + min(b[0] for b in top3) + padding,
+            offset_y + min(b[1] for b in top3),
+            offset_x + max(b[0] + b[2] for b in top3) + ext_w,
+            offset_y + max(b[1] + b[3] for b in top3),
+        )
         print(f"✅ 옵션 영역 감지 성공: {scan_region}")
     except Exception as e:
         print(f"❌ 옵션 영역 감지 오류: {str(e)}")
@@ -652,557 +725,471 @@ def auto_detect_option_region():
             game_window_rect['x'] + get_scaled_value(560),
             game_window_rect['y'] + get_scaled_value(200),
             game_window_rect['x'] + get_scaled_value(820),
-            game_window_rect['y'] + get_scaled_value(450)
+            game_window_rect['y'] + get_scaled_value(450),
         )
 
+# ============================================================
+# 그리드 자동 감지
+# ============================================================
 def auto_detect_grid():
     global first_item_pos, grid_spacing
-    
+
     try:
         status_label.config(text="🔍 아이템 그리드 감지 중...", fg="#f39c12")
         root.update()
-        
-        res_key = (game_window_rect['width'], game_window_rect['height'])
+
+        res_key      = (game_window_rect['width'], game_window_rect['height'])
         preset_found = False
-        
+
         for preset_res, preset_vals in RESOLUTION_PRESETS.items():
             if abs(res_key[0] - preset_res[0]) < 50 and abs(res_key[1] - preset_res[1]) < 50:
                 start_x, start_y, spacing_x, spacing_y = preset_vals
-                first_item_pos = (game_window_rect['x'] + start_x, game_window_rect['y'] + start_y)
-                grid_spacing = (spacing_x, spacing_y)
-                preset_found = True
-                print(f"✅ 프리셋 사용: {preset_res} -> start({start_x},{start_y}) spacing({spacing_x},{spacing_y})")
+                first_item_pos = (game_window_rect['x'] + start_x,
+                                  game_window_rect['y'] + start_y)
+                grid_spacing   = (spacing_x, spacing_y)
+                preset_found   = True
+                print(f"✅ 프리셋 사용: {preset_res}")
                 break
-        
+
         if not preset_found:
-            base_start = (82, 97)
-            base_spacing = (105, 110)
-            
             first_item_pos = (
-                game_window_rect['x'] + get_scaled_value(base_start[0]),
-                game_window_rect['y'] + get_scaled_value(base_start[1])
+                game_window_rect['x'] + get_scaled_value(82),
+                game_window_rect['y'] + get_scaled_value(97),
             )
-            grid_spacing = (
-                get_scaled_value(base_spacing[0]),
-                get_scaled_value(base_spacing[1])
-            )
-            print(f"✅ 스케일 계산: scale={current_scale:.2f}x")
-        
-        detected_items = detect_yellow_items()
-        
-        if len(detected_items) >= 4:
-            left_top_items = [
-                item for item in detected_items
-                if item[0] < game_window_rect['x'] + game_window_rect['width'] * 0.6
-                and item[1] < game_window_rect['y'] + game_window_rect['height'] * 0.4
-            ]
-            
-            if len(left_top_items) >= 4:
-                left_top_items.sort(key=lambda p: p[0] + p[1])
-                detected_first = left_top_items[0]
-                
-                diff_x = abs(detected_first[0] - first_item_pos[0])
-                diff_y = abs(detected_first[1] - first_item_pos[1])
-                
-                if diff_x > 20 or diff_y > 20:
-                    print(f"⚠️ 계산 위치와 감지 위치 차이 큼: ({diff_x}, {diff_y})")
-                    print(f"   계산: {first_item_pos} -> 감지: {detected_first}")
-                    first_item_pos = detected_first
-                    
-                    sorted_by_x = sorted(left_top_items, key=lambda p: p[0])
-                    sorted_by_y = sorted(left_top_items, key=lambda p: p[1])
-                    
-                    if len(sorted_by_x) >= 2:
-                        x_diffs = [sorted_by_x[i+1][0] - sorted_by_x[i][0] 
-                                  for i in range(min(3, len(sorted_by_x)-1))]
-                        avg_x_spacing = int(np.median(x_diffs))
-                        grid_spacing = (avg_x_spacing, grid_spacing[1])
-                        print(f"   X 간격 재계산: {avg_x_spacing}")
-                    
-                    if len(sorted_by_y) >= 2:
-                        y_diffs = [sorted_by_y[i+1][1] - sorted_by_y[i][1] 
-                                  for i in range(min(3, len(sorted_by_y)-1))]
-                        avg_y_spacing = int(np.median(y_diffs))
-                        grid_spacing = (grid_spacing[0], avg_y_spacing)
-                        print(f"   Y 간격 재계산: {avg_y_spacing}")
-                else:
-                    print(f"✅ 계산 위치 검증 완료 (오차: {diff_x}, {diff_y})")
-        
-        print(f"📍 최종 첫 아이템 위치: {first_item_pos}")
-        print(f"📏 최종 간격: {grid_spacing}")
+            grid_spacing = (get_scaled_value(105), get_scaled_value(110))
+
+        detected = detect_yellow_items()
+        if len(detected) >= 4:
+            lt = [d for d in detected
+                  if d[0] < game_window_rect['x'] + game_window_rect['width']  * 0.6
+                  and d[1] < game_window_rect['y'] + game_window_rect['height'] * 0.4]
+            if len(lt) >= 4:
+                lt.sort(key=lambda p: p[0] + p[1])
+                df = lt[0]
+                if abs(df[0] - first_item_pos[0]) > 20 or abs(df[1] - first_item_pos[1]) > 20:
+                    first_item_pos = df
+                    sx = sorted(lt, key=lambda p: p[0])
+                    sy = sorted(lt, key=lambda p: p[1])
+                    if len(sx) >= 2:
+                        grid_spacing = (int(np.median([sx[i+1][0]-sx[i][0] for i in range(min(3,len(sx)-1))])),
+                                        grid_spacing[1])
+                    if len(sy) >= 2:
+                        grid_spacing = (grid_spacing[0],
+                                        int(np.median([sy[i+1][1]-sy[i][1] for i in range(min(3,len(sy)-1))])))
+
+        print(f"📍 첫 아이템: {first_item_pos} | 간격: {grid_spacing}")
         status_label.config(text="⏳ 대기 중...", fg="#95a5a6")
-        
     except Exception as e:
         status_label.config(text=f"❌ 오류: {str(e)}", fg="#e74c3c")
-        print(f"❌ 그리드 설정 오류: {str(e)}")
 
 def get_item_position(row, col):
-    if not first_item_pos: 
+    if not first_item_pos:
         return None
-    
-    x = first_item_pos[0] + (col * grid_spacing[0])
-    y = first_item_pos[1] + (row * grid_spacing[1])
-    
-    return (x, y)
+    return (first_item_pos[0] + col * grid_spacing[0],
+            first_item_pos[1] + row * grid_spacing[1])
 
+# ============================================================
+# ✅ 전체 그리드 사전 스캔 (잠금 + 폐기 동시 확인)
+# ============================================================
 def pre_scan_all_locks():
-    """모든 아이템의 잠금 상태를 미리 확인"""
     global lock_status_cache
     lock_status_cache.clear()
-    
-    print("\n" + "="*60)
-    print("🔍 전체 그리드 잠금 상태 사전 스캔 시작")
-    print("="*60)
-    
-    status_label.config(text="🔍 잠금 상태 확인 중...", fg="#f39c12")
+
+    print("\n" + "=" * 60)
+    print("🔍 전체 그리드 잠금/폐기 상태 사전 스캔 시작")
+    print("=" * 60)
+    status_label.config(text="🔍 잠금/폐기 상태 확인 중...", fg="#f39c12")
     root.update()
-    
-    total_items = 0
-    locked_items = 0
-    
+
+    total_items    = 0
+    locked_items   = 0
+    disposed_items = 0
+
     for row in range(GRID_ROWS):
         for col in range(GRID_COLS):
             item_pos = get_item_position(row, col)
-            
+
             if not is_item_at_position(item_pos):
                 print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
                 lock_status_cache[(row, col)] = "empty"
-                status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금)", fg="#2ecc71")
-                return total_items, locked_items
-            
+                status_label.config(
+                    text=f"✅ 사전 스캔 완료 (잠금:{locked_items} 폐기:{disposed_items}/{total_items})",
+                    fg="#2ecc71")
+                return total_items, locked_items, disposed_items
+
             total_items += 1
-            
-            is_locked = is_item_locked_template(item_pos)
-            lock_status_cache[(row, col)] = "locked" if is_locked else "unlocked"
-            
-            if is_locked:
+
+            # ── 잠금 확인 ──
+            if is_item_locked_template(item_pos):
+                lock_status_cache[(row, col)] = "locked"
                 locked_items += 1
                 print(f"🔒 [{row},{col}] 잠금됨")
+            # ── 폐기 확인 (잠금이 아닐 때만) ──
+            elif is_item_disposed_template(item_pos):
+                lock_status_cache[(row, col)] = "disposed"
+                disposed_items += 1
+                print(f"🗑️ [{row},{col}] 폐기됨")
             else:
-                print(f"🔓 [{row},{col}] 잠금 안됨")
-            
-            progress_label.config(text=f"사전 확인: {total_items}/24 | 잠금: {locked_items}")
+                lock_status_cache[(row, col)] = "unlocked"
+                print(f"🔓 [{row},{col}] 잠금/폐기 안됨")
+
+            progress_label.config(
+                text=f"사전 확인: {total_items}/24 | 잠금:{locked_items} 폐기:{disposed_items}")
             root.update()
-            
-            time.sleep(0.03)  # 0.05 -> 0.03 최적화
-    
-    status_label.config(text=f"✅ 사전 스캔 완료 ({locked_items}/{total_items} 잠금)", fg="#2ecc71")
-    
-    print("\n" + "="*60)
-    print(f"✅ 사전 스캔 완료: 총 {total_items}개 중 {locked_items}개 잠금됨")
-    print("="*60 + "\n")
-    
-    return total_items, locked_items
+            time.sleep(0.03)
+
+    status_label.config(
+        text=f"✅ 사전 스캔 완료 (잠금:{locked_items} 폐기:{disposed_items}/{total_items})",
+        fg="#2ecc71")
+    print(f"\n✅ 사전 스캔 완료: 총 {total_items}개 | 잠금 {locked_items} | 폐기 {disposed_items}\n")
+    return total_items, locked_items, disposed_items
 
 # ============================================================
-# ⭐ 최적화된 이미지 전처리 함수
+# OCR
 # ============================================================
 def preprocess_image_fast(img):
-    """
-    빠른 전처리 (스케일만 적용)
-    """
-    img_array = np.array(img)
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
-    
-    # 2배 확대만 적용
+    arr    = np.array(img)
+    gray   = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if len(arr.shape) == 3 else arr
     resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    
-    # 반전 및 이진화
-    inverted = cv2.bitwise_not(resized)
-    _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    return Image.fromarray(binary)
+    inv    = cv2.bitwise_not(resized)
+    _, bin_ = cv2.threshold(inv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(bin_)
 
-# ============================================================
-# ⭐ 단일 영역 OCR 함수
-# ============================================================
 def scan_options_single(region, position=None):
-    """
-    전체 영역을 한 번에 OCR 처리
-    position: (row, col) 튜플
-    """
     try:
-        # 캐시 확인
         region_key = str(region)
         with cache_lock:
             if region_key in ocr_cache:
-                cache_data = ocr_cache[region_key]
-                if len(cache_data) >= 2:
-                    cache_time, result = cache_data[0], cache_data[1]
-                    if time.time() - cache_time < 1.0:
-                        print(f"📦 캐시 사용")
-                        if result:
-                            print(f"✅ 인식: {', '.join(result)}")
-                        return result
-        
-        # 전체 영역 밝기 체크
+                ct, result = ocr_cache[region_key]
+                if time.time() - ct < 1.0:
+                    print("📦 캐시 사용")
+                    return result
+
         test_img = ImageGrab.grab(bbox=region)
-        avg_brightness = np.mean(np.array(test_img))
-        print(f"📊 이미지 밝기: {avg_brightness:.1f}")
-        
-        if avg_brightness < 10:
-            print(f"⚠️ 이미지가 너무 어두움 - 옵션창이 안열렸을 가능성")
+        if np.mean(np.array(test_img)) < 10:
+            print("⚠️ 이미지 너무 어두움")
             return []
-        
-        print(f"🔄 단일 영역 OCR 시작")
-        
-        # 이미지 캡처 및 전처리
-        img = ImageGrab.grab(bbox=region)
-        processed_img = preprocess_image_fast(img)
-        
-        # OCR 실행
-        text = pytesseract.image_to_string(
-            processed_img, 
-            lang=TESSERACT_LANG,
-            config=TESSERACT_CONFIG
-        )
-        
-        # ⭐ 디버깅: 원본 OCR 결과 출력
+
+        img  = ImageGrab.grab(bbox=region)
+        proc = preprocess_image_fast(img)
+        text = pytesseract.image_to_string(proc, lang=TESSERACT_LANG, config=TESSERACT_CONFIG)
+
         if text.strip():
             print(f"🔍 원본 OCR: {repr(text.strip())}")
-        
-        found_keywords = []
-        seen = set()
-        
+
+        compound_keywords = ["궁극기 충전 효율", "치유 효율"]
+        found  = []
+        seen   = set()
+
         if text.strip():
-            lines = text.split('\n')
-            
-            # 복합어 우선 목록
-            compound_keywords = ["궁극기 충전 효율", "치유 효율"]
-            
-            # 1단계: 각 라인에서 키워드 추출
-            all_keywords = []
+            lines    = text.split('\n')
+            all_kw   = []
+
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
-                
-                # ⭐ 자모 분리 OCR 대응: 공백 제거 후 통합 문자열로도 시도
-                # 예: "ㅇ 요 율" → "요율" 로 처리
-                merged_line = re.sub(r'\s+', '', line)
-                
-                normalized = normalize_korean_text(line)
-                
-                # 원본 라인에서 실패 시 공백 제거 버전으로 재시도
-                if not normalized:
-                    normalized = normalize_korean_text(merged_line)
-                
-                if normalized:
-                    all_keywords.append(normalized)
-            
-            # ⭐ 전체 텍스트를 하나로 합쳐서도 시도 (멀티라인 복합어 대응)
-            full_text_merged = re.sub(r'\s+', '', text)
-            full_normalized = normalize_korean_text(full_text_merged)
-            # 전체 합친 결과가 복합어면 all_keywords에 없는 경우 추가
-            if full_normalized in compound_keywords and full_normalized not in all_keywords:
-                all_keywords.insert(0, full_normalized)
-                print(f"   ⭐ 전체 합산 복합어 감지: {full_normalized}")
-            
-            # 2단계: 복합어 우선 처리
-            for keyword in all_keywords:
-                if keyword in compound_keywords and keyword not in seen:
-                    found_keywords.append(keyword)
-                    seen.add(keyword)
-            
-            # 3단계: 복합어가 있으면 "효율" 제외
-            has_compound_with_efficiency = any(k in seen for k in compound_keywords)
-            
-            # 4단계: 나머지 키워드 추가
-            for keyword in all_keywords:
-                if keyword not in seen:
-                    # "효율"은 복합어가 있을 때만 제외
-                    if keyword == "효율" and has_compound_with_efficiency:
+                merged = re.sub(r'\s+', '', line)
+                norm   = normalize_korean_text(line) or normalize_korean_text(merged)
+                if norm:
+                    all_kw.append(norm)
+
+            full_norm = normalize_korean_text(re.sub(r'\s+', '', text))
+            if full_norm in compound_keywords and full_norm not in all_kw:
+                all_kw.insert(0, full_norm)
+
+            for kw in all_kw:
+                if kw in compound_keywords and kw not in seen:
+                    found.append(kw); seen.add(kw)
+
+            has_compound = any(k in seen for k in compound_keywords)
+            for kw in all_kw:
+                if kw not in seen:
+                    if kw == "효율" and has_compound:
                         continue
-                    found_keywords.append(keyword)
-                    seen.add(keyword)
-        
-        if not found_keywords:
-            print(f"❌ OCR 완전 실패 - 인식된 키워드 없음")
+                    found.append(kw); seen.add(kw)
+
+        if not found:
+            print("❌ OCR 키워드 없음")
             return []
-        
-        print(f"✅ 최종 인식: {', '.join(found_keywords)}")
-        
-        # 캐시 저장
+
+        print(f"✅ 최종 인식: {', '.join(found)}")
+
         with cache_lock:
-            ocr_cache[region_key] = (time.time(), found_keywords)
+            ocr_cache[region_key] = (time.time(), found)
             if len(ocr_cache) > 50:
                 oldest = min(ocr_cache.items(), key=lambda x: x[1][0])
                 del ocr_cache[oldest[0]]
-        
-        return found_keywords
-        
+
+        return found
     except Exception as e:
         print(f"❌ OCR 오류: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return []
 
 def scan_options(position=None):
-    """OCR 스캔 메인 함수"""
     return scan_options_single(scan_region, position)
 
 def check_weapon_match(options):
-    """
-    인식된 한글 옵션들과 무기 DB를 비교하여 매칭되는 무기 반환
-    """
-    matched_weapons = []
-    
+    matched = []
     for name, req_opts in WEAPON_DB.items():
         if name.startswith('_comment'):
             continue
-        
         if all(opt in options for opt in req_opts):
-            matched_weapons.append(name)
+            matched.append(name)
             print(f"   🎯 매칭: {name} (필요: {', '.join(req_opts)})")
-    
-    return matched_weapons
+    return matched
 
+# ============================================================
+# ✅ 메인 스캔 루프
+# ============================================================
 def scan_loop():
     global auto_scan_enabled, scan_state
-    if not auto_scan_enabled: return
-    
-    row, col = scan_state["current_row"], scan_state["current_col"]
-    if row >= GRID_ROWS:
-        status_label.config(text=f"✅ 완료! (총 {scan_state['total_scanned']}개)", fg="#2ecc71")
-        stop_scan_ui()
-        
-        # ✅ 스캔 완료 시 로그 파일 저장
-        saved_path = save_scan_log()
-        if saved_path:
-            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
-        
+
+    if not auto_scan_enabled:
         return
 
-    item_pos = get_item_position(row, col)
-    
-    print(f"\n{'='*50}")
-    print(f"🔍 [{row},{col}] 스캔 중 - 위치: {item_pos}")
-    
-    # 사전 스캔 결과 확인
-    cache_status = lock_status_cache.get((row, col), None)
-    
-    if cache_status == "empty":
-        print(f"⚠️ [{row},{col}] 빈 슬롯 (사전 확인됨) - 스캔 종료")
-        status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
-        
-        # ✅ 로그 기록
-        scan_log.append({
-            'position': (row, col),
-            'status': 'empty',
-            'options': [],
-            'matches': [],
-            'locked': False
-        })
-        
+    row, col = scan_state["current_row"], scan_state["current_col"]
+
+    if row >= GRID_ROWS:
+        status_label.config(
+            text=f"✅ 완료! (스캔:{scan_state['total_scanned']} 잠금:{scan_state['total_locked']} 폐기:{scan_state['total_disposed']})",
+            fg="#2ecc71")
         stop_scan_ui()
-        
-        # ✅ 스캔 완료 시 로그 파일 저장
-        saved_path = save_scan_log()
-        if saved_path:
-            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
-        
+        saved = save_scan_log()
+        if saved:
+            messagebox.showinfo("스캔 완료",
+                f"스캔 완료!\n\n"
+                f"잠금: {scan_state['total_locked']}개\n"
+                f"폐기: {scan_state['total_disposed']}개\n\n"
+                f"로그: {saved}")
         return
-    
+
+    item_pos     = get_item_position(row, col)
+    cache_status = lock_status_cache.get((row, col), None)
+
+    print(f"\n{'='*50}")
+    print(f"🔍 [{row},{col}] 스캔 | 위치: {item_pos} | 캐시: {cache_status}")
+
+    # ── 빈 슬롯 ──
+    if cache_status == "empty":
+        print(f"⚠️ [{row},{col}] 빈 슬롯 - 종료")
+        scan_log.append({'position': (row, col), 'status': 'empty',
+                         'options': [], 'matches': [], 'locked': False})
+        stop_scan_ui()
+        saved = save_scan_log()
+        if saved:
+            messagebox.showinfo("스캔 완료", f"스캔 완료!\n\n로그: {saved}")
+        return
+
+    # ── 이미 잠금됨 → 건너뜀 ──
     if cache_status == "locked":
-        print(f"🔒 [{row},{col}] 이미 잠금됨 (사전 확인됨) - 건너뜀")
+        print(f"🔒 [{row},{col}] 이미 잠금됨 - 건너뜀")
         match_label.config(text="🔒 이미 잠금됨", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금)", fg="#95a5a6")
-        
-        # ✅ 로그 기록
-        scan_log.append({
-            'position': (row, col),
-            'status': 'pre_locked',
-            'options': [],
-            'matches': [],
-            'locked': False
-        })
-        
-        scan_state["total_scanned"] += 1
-        scan_state["current_col"] += 1
-        if scan_state["current_col"] >= GRID_COLS:
-            scan_state["current_col"] = 0
-            scan_state["current_row"] += 1
-        
-        progress_label.config(text=f"진행: {scan_state['total_scanned']}/24 | 잠금: {scan_state['total_locked']}")
-        root.after(100, scan_loop)  # 200 -> 100 최적화
+        scan_log.append({'position': (row, col), 'status': 'pre_locked',
+                         'options': [], 'matches': [], 'locked': False})
+        _advance_and_next(100)
         return
-    
-    # 실시간 아이템 존재 확인
+
+    # ── 이미 폐기됨 → 건너뜀 ──
+    if cache_status == "disposed":
+        print(f"🗑️ [{row},{col}] 이미 폐기됨 - 건너뜀")
+        match_label.config(text="🗑️ 이미 폐기됨", fg="#95a5a6")
+        option_label.config(text="건너뜀 (폐기)", fg="#95a5a6")
+        scan_log.append({'position': (row, col), 'status': 'pre_disposed',
+                         'options': [], 'matches': [], 'locked': False})
+        _advance_and_next(100)
+        return
+
+    # ── 실시간 존재 확인 ──
     if not is_item_at_position(item_pos):
-        print(f"⚠️ [{row},{col}] 아이템 없음 - 스캔 종료")
-        status_label.config(text="✅ 스캔 종료 (빈 공간)", fg="#2ecc71")
-        
-        # ✅ 로그 기록
-        scan_log.append({
-            'position': (row, col),
-            'status': 'empty',
-            'options': [],
-            'matches': [],
-            'locked': False
-        })
-        
+        print(f"⚠️ [{row},{col}] 아이템 없음 - 종료")
+        scan_log.append({'position': (row, col), 'status': 'empty',
+                         'options': [], 'matches': [], 'locked': False})
         stop_scan_ui()
-        
-        # ✅ 스캔 완료 시 로그 파일 저장
-        saved_path = save_scan_log()
-        if saved_path:
-            messagebox.showinfo("스캔 완료", f"스캔이 완료되었습니다!\n\n로그 파일: {saved_path}")
-        
+        saved = save_scan_log()
+        if saved:
+            messagebox.showinfo("스캔 완료", f"스캔 완료!\n\n로그: {saved}")
         return
-    
-    print(f"✅ 아이템 감지됨 - 클릭하여 옵션 확인")
+
+    # ── 아이템 클릭 ──
     click_position(item_pos)
-    
-    time.sleep(0.15)  # 0.2 -> 0.15 최적화
-    
-    # 마우스를 (0, 0)으로 이동
+    time.sleep(0.15)
     try:
         win32api.SetCursorPos((0, 0))
     except:
         pass
-    
-    print(f"⏱️ 클릭 후 {scan_delay_after_click:.2f}초 대기 중...")
     time.sleep(scan_delay_after_click)
-    
-    # OCR 재시도 로직 (최대 2회로 감소)
+
+    # ── ✅ 클릭 후 실시간 잠금/폐기 재확인 ──
+    # 사전 스캔에서 놓쳤을 경우를 대비해 클릭 후 다시 확인
+    if is_item_locked_template(item_pos):
+        print(f"🔒 [{row},{col}] 클릭 후 재확인: 잠금됨 → 건너뜀")
+        match_label.config(text="🔒 잠금됨 (재확인)", fg="#95a5a6")
+        option_label.config(text="건너뜀 (잠금 재확인)", fg="#95a5a6")
+        scan_log.append({'position': (row, col), 'status': 'pre_locked',
+                         'options': [], 'matches': [], 'locked': False})
+        _advance_and_next(100)
+        return
+
+    if is_item_disposed_template(item_pos):
+        print(f"🗑️ [{row},{col}] 클릭 후 재확인: 폐기됨 → 건너뜀")
+        match_label.config(text="🗑️ 폐기됨 (재확인)", fg="#95a5a6")
+        option_label.config(text="건너뜀 (폐기 재확인)", fg="#95a5a6")
+        scan_log.append({'position': (row, col), 'status': 'pre_disposed',
+                         'options': [], 'matches': [], 'locked': False})
+        _advance_and_next(100)
+        return
+
+    # ── OCR 시도 (최대 2회) ──
     detected_options = []
-    max_retries = 2  # 3 -> 2로 최적화
-    
-    for attempt in range(max_retries):
+    for attempt in range(2):
         if attempt > 0:
-            print(f"🔄 OCR 재시도 {attempt}/{max_retries-1}")
-            time.sleep(0.2)  # 0.25 -> 0.2 최적화
-            
-            print(f"   ↻ 아이템 재클릭")
+            print(f"🔄 OCR 재시도 {attempt}")
+            time.sleep(0.2)
             click_position(item_pos)
             time.sleep(0.15)
-            
             try:
                 win32api.SetCursorPos((0, 0))
             except:
                 pass
-            
             time.sleep(scan_delay_after_click)
-        
+
         detected_options = scan_options(position=(row, col))
-        
         if detected_options:
-            print(f"✅ OCR 성공 ({attempt+1}번째 시도)")
+            print(f"✅ OCR 성공 ({attempt+1}번째)")
             break
-        else:
-            print(f"⚠️ OCR 실패 ({attempt+1}번째 시도)")
-    
-    # 결과 처리 및 로그 기록
-    item_locked = False
-    matched_weapons = []
-    
+
+    # ── 결과 처리 ──
+    item_locked         = False
+    item_disposed       = False
+    item_dispose_failed = False
+    matched_weapons     = []
+
     if detected_options:
-        option_text = ", ".join(detected_options)
-        option_label.config(text=f"감지: {option_text}", fg="#27ae60")
-        
+        option_label.config(text=f"감지: {', '.join(detected_options)}", fg="#27ae60")
         matched_weapons = check_weapon_match(detected_options)
+
         if matched_weapons:
-            match_text = ", ".join(matched_weapons)
-            match_label.config(text=f"✅ 일치: {match_text}", fg="#27ae60")
-            print(f"🎯 매칭: {match_text}")
-            
-            btn_pos = find_lock_button()
-            if btn_pos: 
-                click_position(btn_pos)
+            match_label.config(text=f"✅ 일치: {', '.join(matched_weapons)}", fg="#27ae60")
+            print(f"🎯 매칭: {', '.join(matched_weapons)}")
+
+            btn = find_lock_button()
+            if not btn:
+                time.sleep(0.08)
+                btn = find_lock_button()
+
+            if btn:
+                click_position(btn)
                 scan_state["total_locked"] += 1
                 item_locked = True
-                print(f"🔐 잠금 완료")
-                time.sleep(0.1)  # 0.15 -> 0.1 최적화
+                print("🔐 잠금 완료")
+                time.sleep(0.1)
             else:
-                print(f"⚠️ 잠금 버튼 찾기 실패 - 버튼 재탐색")
-                time.sleep(0.08)  # 0.1 -> 0.08 최적화
-                btn_pos = find_lock_button()
-                if btn_pos:
-                    click_position(btn_pos)
-                    scan_state["total_locked"] += 1
-                    item_locked = True
-                    print(f"🔐 잠금 완료 (재시도)")
-                else:
-                    print(f"❌ 잠금 버튼 찾기 완전 실패")
-        else: 
-            match_label.config(text="❌ 일치 없음", fg="#95a5a6")
-            print(f"❌ 무기 매칭 실패")
-    else: 
-        option_label.config(text=f"❌ OCR 실패 ({max_retries}회)", fg="#e74c3c")
-        print(f"❌ 옵션 인식 완전 실패 ({max_retries}회 시도)")
-    
-    # ✅ 로그 기록
-    scan_log.append({
-        'position': (row, col),
-        'status': 'scanned',
-        'options': detected_options,
-        'matches': matched_weapons,
-        'locked': item_locked
-    })
-    
-    scan_state["total_scanned"] += 1
-    scan_state["current_col"] += 1
-    if scan_state["current_col"] >= GRID_COLS:
-        scan_state["current_col"] = 0
-        scan_state["current_row"] += 1
-    
-    progress_label.config(text=f"진행: {scan_state['total_scanned']}/24 | 잠금: {scan_state['total_locked']}")
-    
-    next_delay_ms = int(scan_delay_between_items * 1000)
-    print(f"⏱️ 다음 아이템까지 {scan_delay_between_items:.2f}초 대기...")
-    root.after(next_delay_ms, scan_loop)
+                print("❌ 잠금 버튼 찾기 실패")
+                match_label.config(text=f"✅ 일치: {', '.join(matched_weapons)} (잠금 실패)", fg="#e67e22")
 
+        else:
+            match_label.config(text="🗑️ 불일치 → 폐기", fg="#e74c3c")
+            print("❌ 무기 매칭 없음 → 폐기 버튼 탐색")
+
+            dispose_btn = find_dispose_button()
+            if not dispose_btn:
+                time.sleep(0.08)
+                dispose_btn = find_dispose_button()
+
+            if dispose_btn:
+                click_position(dispose_btn)
+                scan_state["total_disposed"] += 1
+                item_disposed = True
+                print("🗑️ 폐기 버튼 클릭 완료")
+                time.sleep(0.1)
+            else:
+                print("⚠️ 폐기 버튼 찾기 실패")
+                match_label.config(text="❌ 불일치 (폐기 버튼 미발견)", fg="#e74c3c")
+                item_dispose_failed = True
+    else:
+        option_label.config(text="❌ OCR 실패 (2회)", fg="#e74c3c")
+        print("❌ OCR 완전 실패")
+
+    scan_log.append({
+        'position':       (row, col),
+        'status':         'scanned',
+        'options':        detected_options,
+        'matches':        matched_weapons,
+        'locked':         item_locked,
+        'disposed':       item_disposed,
+        'dispose_failed': item_dispose_failed,
+    })
+
+    progress_label.config(
+        text=f"진행: {scan_state['total_scanned']+1}/24 | "
+             f"잠금: {scan_state['total_locked']} | "
+             f"폐기: {scan_state['total_disposed']}")
+
+    _advance_and_next(int(scan_delay_between_items * 1000))
+
+def _advance_and_next(delay_ms):
+    scan_state["total_scanned"] += 1
+    scan_state["current_col"]   += 1
+    if scan_state["current_col"] >= GRID_COLS:
+        scan_state["current_col"]  = 0
+        scan_state["current_row"] += 1
+    root.after(delay_ms, scan_loop)
+
+# ============================================================
+# UI 제어
+# ============================================================
 def toggle_auto_scan():
     global auto_scan_enabled, scan_log
-    if auto_scan_enabled: 
+
+    if auto_scan_enabled:
         stop_scan_ui()
         return
-    
+
     if lock_template is None or lock_button_template is None:
-        status_label.config(text="❌ 템플릿 파일 필요!", fg="#e74c3c")
+        status_label.config(text="❌ 잠금 템플릿 파일 필요!", fg="#e74c3c")
         return
-    
+
+    if dispose_button_template is None:
+        print("⚠️ dispose_button_template.png 없음 - 폐기 기능 비활성화 상태로 실행")
+
     if not find_game_window():
-        response = tk.messagebox.askyesno(
-            "게임 창 찾기 실패",
-            "게임 창을 찾을 수 없습니다.\n\n전체 화면 사용하시겠습니까?"
-        )
+        response = messagebox.askyesno("게임 창 찾기 실패",
+                                       "게임 창을 찾을 수 없습니다.\n전체 화면 사용하시겠습니까?")
         if response:
             global game_window_rect, current_scale
             screen = ImageGrab.grab()
-            game_window_rect = {
-                'x': 0, 'y': 0,
-                'width': screen.width,
-                'height': screen.height
-            }
-            current_scale = screen.width / 1280
+            game_window_rect = {'x': 0, 'y': 0, 'width': screen.width, 'height': screen.height}
+            current_scale    = screen.width / 1280
         else:
             return
-    
+
     auto_detect_option_region()
     auto_detect_grid()
-    
+
     if scan_region and first_item_pos:
-        # ✅ 로그 초기화
         scan_log = []
         init_log_file()
-        
-        # 사전 스캔 실행
-        total, locked = pre_scan_all_locks()
-        
-        # 잠금 가능한 아이템이 없으면 종료
-        if total == locked:
-            status_label.config(text="✅ 모든 아이템이 이미 잠금됨", fg="#2ecc71")
-            messagebox.showinfo("스캔 완료", f"모든 아이템({total}개)이 이미 잠금되어 있습니다.")
+
+        total, locked, disposed = pre_scan_all_locks()
+
+        if total == locked + disposed:
+            status_label.config(text="✅ 모든 아이템 잠금/폐기 완료", fg="#2ecc71")
+            messagebox.showinfo("스캔 완료",
+                f"모든 아이템({total}개)이 이미 잠금({locked}) 또는 폐기({disposed}) 되어 있습니다.")
             return
-        
+
         auto_scan_enabled = True
-        scan_state.update({"current_row": 0, "current_col": 0, "total_scanned": 0, "total_locked": 0})
+        scan_state.update({
+            "current_row": 0, "current_col": 0,
+            "total_scanned": 0, "total_locked": 0, "total_disposed": 0,
+        })
         auto_btn.config(text="⏸️ 스캔 중지 (F1/F2)", style="Running.TButton")
-        
+
         with cache_lock:
             ocr_cache.clear()
-        
+
         scan_loop()
 
 def stop_scan_ui():
@@ -1212,9 +1199,12 @@ def stop_scan_ui():
 
 def on_key_press(key):
     try:
-        if key == keyboard.Key.f1: toggle_auto_scan()
-        elif key == keyboard.Key.f2: stop_scan_ui()
-    except: pass
+        if key == keyboard.Key.f1:
+            toggle_auto_scan()
+        elif key == keyboard.Key.f2:
+            stop_scan_ui()
+    except:
+        pass
 
 keyboard.Listener(on_press=on_key_press).start()
 
@@ -1223,42 +1213,50 @@ keyboard.Listener(on_press=on_key_press).start()
 # ============================================================
 root = tk.Tk()
 root.title("Endfield Auto Scanner")
-root.geometry("600x550")
+root.geometry("600x580")
 root.attributes("-topmost", True)
+
 style = ttk.Style()
 style.configure("Running.TButton", foreground="#e74c3c")
 
 f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
-# 제목
-tk.Label(f, text="엔드필드 자동 잠금 ⚡", font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
+tk.Label(f, text="엔드필드 자동 잠금/폐기 ⚡",
+         font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
 
-# 자동 스캔 버튼
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
 
-# 상태 라벨
-status_label = tk.Label(f, text="⏳ 대기 중...", font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1", fg="#95a5a6")
+status_label = tk.Label(f, text="⏳ 대기 중...",
+                        font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1", fg="#95a5a6")
 status_label.pack(pady=(10, 5))
 
-# 진행 라벨
-progress_label = tk.Label(f, text="진행: 0/24 | 잠금: 0", font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
+progress_label = tk.Label(f, text="진행: 0/24 | 잠금: 0 | 폐기: 0",
+                          font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
 progress_label.pack(pady=5)
 
-# 실시간 결과 프레임
-result_frame = tk.LabelFrame(f, text="📊 실시간 결과", bg="white", padx=15, pady=10, font=("Malgun Gothic", 10, "bold"))
+result_frame = tk.LabelFrame(f, text="📊 실시간 결과", bg="white", padx=15, pady=10,
+                              font=("Malgun Gothic", 10, "bold"))
 result_frame.pack(fill="both", expand=True, pady=(10, 0))
 
-option_label = tk.Label(result_frame, text="감지: -", bg="white", anchor="w", font=("Malgun Gothic", 9))
+option_label = tk.Label(result_frame, text="감지: -", bg="white", anchor="w",
+                        font=("Malgun Gothic", 9))
 option_label.pack(fill="x", pady=3)
 
-match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w", font=("Malgun Gothic", 9))
+match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w",
+                       font=("Malgun Gothic", 9))
 match_label.pack(fill="x", pady=3)
 
-# 도움말
-help_label = tk.Label(f, text="F1: 스캔 시작/중지  |  F2: 강제 중지  |  ⚡ 단일 영역 OCR", 
-                      bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
+info_label = tk.Label(result_frame,
+    text="💡 옵션 불일치 시 자동으로 폐기(휴지통) 버튼 클릭",
+    bg="white", anchor="w", font=("Malgun Gothic", 8), fg="#7f8c8d")
+info_label.pack(fill="x", pady=(6, 0))
+
+help_label = tk.Label(f,
+    text="F1: 스캔 시작/중지  |  F2: 강제 중지\n"
+         "필요 파일: lock_template / lock_button / dispose_template / dispose_button",
+    bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
 help_label.pack(pady=(10, 0))
 
 root.after(100, load_lock_template)

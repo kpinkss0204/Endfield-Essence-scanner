@@ -209,6 +209,7 @@ def normalize_korean_text(text):
 
     raw_no_space = re.sub(r'[^\uAC00-\uD7A3\s]', '', text).strip()
 
+    # ── 1단계: 공백 포함 원문에서 복합 효율 키워드 먼저 체크 ──
     if re.search(r'[효요호]\s*[율률]', raw_no_space):
         if re.search(r'궁\s*[극국]\s*기', raw_no_space) and re.search(r'충\s*[전젼]', raw_no_space):
             return "궁극기 충전 효율"
@@ -217,6 +218,7 @@ def normalize_korean_text(text):
         else:
             return "효율"
 
+    # ── 2단계: 공백 제거 후 복합 효율 키워드 체크 ──
     if re.search(r'[효요호][율률롤윤]', clean):
         if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
             return "궁극기 충전 효율"
@@ -225,10 +227,20 @@ def normalize_korean_text(text):
         else:
             return "효율"
 
+    # ── 3단계: 증가 등 불필요한 접미사 제거 후 나머지 매핑 ──
     clean = re.sub(r'(증가|흐가|쿨가|흐쿨|골흐|콜흐|툴골|즘가|승가|즐|증|가|중)$', '', clean)
     clean = re.sub(r'\s+', '', clean)
     if not clean:
         return None
+
+    # ── 접미사 제거 후에도 효율류 패턴이 남아있으면 재체크 ──
+    if re.search(r'[효요호][율률롤윤]', clean):
+        if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
+            return "궁극기 충전 효율"
+        elif re.search(r'치[유우]', clean):
+            return "치유 효율"
+        else:
+            return "효율"
 
     if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
         return "궁극기 충전 효율"
@@ -280,7 +292,7 @@ def normalize_korean_text(text):
         return "억제"
     if re.search(r'잔[혹흑]', clean):
         return "잔혹"
-    if re.search(r'추[격굑]', clean):
+    if re.search(r'[추주][격굑걱]', clean):
         return "추격"
     if re.search(r'기[예얘]', clean):
         return "기예"
@@ -599,51 +611,26 @@ def is_item_locked_template(item_pos):
     bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
     return _match_template_in_region(bbox, lock_template, threshold=0.78)
 
-# ============================================================
-# ✅ 수정된 아이템 폐기 여부 확인
-#
-# 문제: dispose_template이 lock_template(잠금 아이콘)에도
-#       0.72~0.73 점수로 매칭되어 잠금 아이템을 폐기로 오인식
-#
-# 해결 방법 (3단계 검증):
-#   1. dispose_template threshold를 0.40 → 0.55로 상향 (1차 필터)
-#   2. lock_template과 교차검증:
-#      dispose 점수가 lock 점수보다 LOCK_MARGIN(0.08) 이상 높아야 통과
-#   3. 빨간색 픽셀 비율 검증:
-#      폐기 마크는 빨간색, 잠금 아이콘은 흰색/회색이므로
-#      빨간 픽셀이 5% 미만이면 폐기 마크 아님으로 최종 판단
-# ============================================================
 def is_item_disposed_template(item_pos):
     """
     아이템 슬롯 좌하단의 폐기(빨간 휴지통) 마크를 확인합니다.
-
-    ✅ 색상 기반 감지만 사용:
-      - 그레이스케일 템플릿 매칭은 lock/dispose 아이콘이 위치가 같아
-        점수가 항상 비슷하게 나와 구분 불가 → 완전히 제거
-      - 폐기 마크 = 빨간색, 잠금 아이콘 = 흰색/회색 이라는
-        색상 차이만으로 판단 (훨씬 신뢰성 높음)
-      - 아이콘 영역의 빨간 픽셀 수가 임계값 이상이면 폐기로 판단
+    색상 기반 감지: 빨간 픽셀 수가 임계값 이상이면 폐기로 판단
     """
-    # 아이콘 위치: 아이템 슬롯 좌하단 고정
     bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
 
     if (bbox[2] - bbox[0]) < 5 or (bbox[3] - bbox[1]) < 5:
         return False
 
-    # 빨간 픽셀이 이 수 이상이면 폐기 마크로 판단
-    # (아이콘 크기에 비례 — 기본 영역 약 90×90px 기준 50픽셀)
     RED_PIXEL_MIN = max(30, int(grid_spacing[0] * grid_spacing[1] * 0.005))
 
     try:
         region_img = np.array(ImageGrab.grab(bbox=bbox))
         hsv        = cv2.cvtColor(region_img, cv2.COLOR_RGB2HSV)
 
-        # HSV 빨간색 범위 (색상환 양쪽 끝: 0~12도, 168~180도)
         red_mask1 = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
         red_mask2 = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
         red_mask  = cv2.bitwise_or(red_mask1, red_mask2)
 
-        # 노이즈 제거
         kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
 
@@ -819,12 +806,10 @@ def pre_scan_all_locks():
 
             total_items += 1
 
-            # ── 잠금 확인 ──
             if is_item_locked_template(item_pos):
                 lock_status_cache[(row, col)] = "locked"
                 locked_items += 1
                 print(f"🔒 [{row},{col}] 잠금됨")
-            # ── 폐기 확인 (잠금이 아닐 때만) ──
             elif is_item_disposed_template(item_pos):
                 lock_status_cache[(row, col)] = "disposed"
                 disposed_items += 1
@@ -877,13 +862,14 @@ def scan_options_single(region, position=None):
         if text.strip():
             print(f"🔍 원본 OCR: {repr(text.strip())}")
 
+        # 복합 키워드 목록 (공백 포함 키워드)
         compound_keywords = ["궁극기 충전 효율", "치유 효율"]
         found  = []
         seen   = set()
 
         if text.strip():
-            lines    = text.split('\n')
-            all_kw   = []
+            lines  = text.split('\n')
+            all_kw = []
 
             for line in lines:
                 line = line.strip()
@@ -894,20 +880,28 @@ def scan_options_single(region, position=None):
                 if norm:
                     all_kw.append(norm)
 
+            # 전체 텍스트를 하나로 합쳐서 복합 키워드 추가 시도
             full_norm = normalize_korean_text(re.sub(r'\s+', '', text))
             if full_norm in compound_keywords and full_norm not in all_kw:
                 all_kw.insert(0, full_norm)
 
-            for kw in all_kw:
-                if kw in compound_keywords and kw not in seen:
-                    found.append(kw); seen.add(kw)
+            # ── 복합 키워드 앞부분 단어만 제거 대상으로 설정 ──
+            # "치유 효율" → "치유"만 제거, "효율"은 독립 옵션으로 유지
+            # "궁극기 충전 효율" → "궁극기", "충전"만 제거, "효율"은 유지
+            exclude_parts = set()
+            for ck in compound_keywords:
+                if ck in all_kw:
+                    parts = ck.split()
+                    for part in parts[:-1]:
+                        exclude_parts.add(part)
 
-            has_compound = any(k in seen for k in compound_keywords)
+            # ── OCR 줄 순서 그대로 등록 (복합어 앞부분 단어 및 중복 제외) ──
             for kw in all_kw:
                 if kw not in seen:
-                    if kw == "효율" and has_compound:
+                    if kw in exclude_parts:
                         continue
-                    found.append(kw); seen.add(kw)
+                    found.append(kw)
+                    seen.add(kw)
 
         if not found:
             print("❌ OCR 키워드 없음")
@@ -1021,8 +1015,7 @@ def scan_loop():
         pass
     time.sleep(scan_delay_after_click)
 
-    # ── ✅ 클릭 후 실시간 잠금/폐기 재확인 ──
-    # 사전 스캔에서 놓쳤을 경우를 대비해 클릭 후 다시 확인
+    # ── 클릭 후 실시간 잠금/폐기 재확인 ──
     if is_item_locked_template(item_pos):
         print(f"🔒 [{row},{col}] 클릭 후 재확인: 잠금됨 → 건너뜀")
         match_label.config(text="🔒 잠금됨 (재확인)", fg="#95a5a6")

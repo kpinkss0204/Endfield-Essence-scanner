@@ -23,12 +23,9 @@ try:
 except:
     pass
 
-# 테서랙트 경로 및 언어 설정
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# ✅ 한국어 OCR 사용 (자동 폴백 기능 포함)
 def check_tesseract_language():
-    """Tesseract 한국어 언어팩 설치 여부 확인"""
     try:
         test_img = Image.new('RGB', (100, 30), color='white')
         pytesseract.image_to_string(test_img, lang='kor', config=r'--psm 6')
@@ -38,7 +35,6 @@ def check_tesseract_language():
         error_msg = str(e)
         if 'kor' in error_msg or 'language' in error_msg.lower():
             print("⚠️ 한국어 언어팩 없음 - 영어 모드로 폴백")
-            print("💡 한국어 사용 시: https://github.com/tesseract-ocr/tessdata 에서 kor.traineddata 다운로드")
             return 'eng', r'--oem 3 --psm 6'
         else:
             print(f"⚠️ Tesseract 초기화 오류: {error_msg}")
@@ -47,22 +43,14 @@ def check_tesseract_language():
 TESSERACT_LANG, TESSERACT_CONFIG = check_tesseract_language()
 USE_KOREAN_OCR = (TESSERACT_LANG == 'kor')
 
-# ============================================================
-# 리소스 파일 경로 처리 (exe 빌드 대응)
-# ============================================================
 def resource_path(relative_path):
-    """PyInstaller로 빌드된 exe에서 리소스 파일 경로 찾기"""
     try:
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# ============================================================
-# JSON 파일 로드
-# ============================================================
 def load_json(filename):
-    """JSON 파일을 읽어서 딕셔너리로 반환"""
     try:
         filepath = resource_path(filename)
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -79,7 +67,6 @@ if WEAPON_DB is None:
     print("❌ weapons_db.json 로드 실패. 프로그램을 종료합니다.")
     exit(1)
 
-# ✅ 해상도별 프리셋
 RESOLUTION_PRESETS = {
     (1280, 768):  (82,  97,  105, 110),
     (1920, 1080): (123, 145, 158, 165),
@@ -101,7 +88,15 @@ dispose_button_template = None
 grid_spacing = (105, 110)
 
 GRID_COLS = 4
-GRID_ROWS = 6
+GRID_ROWS = 6  # 화면에 보이는 행 수
+
+# ============================================================
+# 스크롤 관련 전역 변수
+# ============================================================
+SCROLL_WHEEL_CLICKS  = 3     # 스크롤 한 번에 내릴 휠 클릭 수
+SCROLL_SETTLE_DELAY  = 0.6   # 스크롤 후 안정 대기(초)
+last_grid_screenshot = None  # 스크롤 전 화면 비교용
+total_row_offset     = 0     # 로그용 누적 행 오프셋
 
 auto_scan_enabled = False
 scan_state = {
@@ -112,10 +107,9 @@ scan_state = {
     "total_disposed": 0,
 }
 
-scan_delay_after_click    = 0.4
-scan_delay_between_items  = 0.2
+scan_delay_after_click   = 0.4
+scan_delay_between_items = 0.2
 
-# ✅ 잠금/폐기 상태 캐시
 lock_status_cache = {}
 
 ocr_cache  = {}
@@ -156,7 +150,6 @@ def save_scan_log():
             for entry in scan_log:
                 row, col = entry['position']
                 f.write(f"[{row},{col}] ")
-
                 if entry['status'] == 'empty':
                     f.write("빈 슬롯\n\n")
                     continue
@@ -169,9 +162,7 @@ def save_scan_log():
                 if not entry['options']:
                     f.write("❌ OCR 실패\n\n")
                     continue
-
                 f.write(f"\n옵션: {', '.join(entry['options'])}\n")
-
                 if entry['matches']:
                     f.write(f"매칭: {', '.join(entry['matches'])}\n")
                     if entry['locked']:
@@ -197,19 +188,15 @@ def save_scan_log():
         return None
 
 # ============================================================
-# 한국어 텍스트 보정 함수
+# 한국어 텍스트 보정
 # ============================================================
 def normalize_korean_text(text):
     import re
-
     clean = re.sub(r'\s+', '', text)
     clean = re.sub(r'[^\uAC00-\uD7A3]', '', clean)
     if not clean:
         return None
-
     raw_no_space = re.sub(r'[^\uAC00-\uD7A3\s]', '', text).strip()
-
-    # ── 1단계: 공백 포함 원문에서 복합 효율 키워드 먼저 체크 ──
     if re.search(r'[효요호]\s*[율률]', raw_no_space):
         if re.search(r'궁\s*[극국]\s*기', raw_no_space) and re.search(r'충\s*[전젼]', raw_no_space):
             return "궁극기 충전 효율"
@@ -217,8 +204,6 @@ def normalize_korean_text(text):
             return "치유 효율"
         else:
             return "효율"
-
-    # ── 2단계: 공백 제거 후 복합 효율 키워드 체크 ──
     if re.search(r'[효요호][율률롤윤]', clean):
         if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
             return "궁극기 충전 효율"
@@ -226,14 +211,10 @@ def normalize_korean_text(text):
             return "치유 효율"
         else:
             return "효율"
-
-    # ── 3단계: 증가 등 불필요한 접미사 제거 후 나머지 매핑 ──
     clean = re.sub(r'(증가|흐가|쿨가|흐쿨|골흐|콜흐|툴골|즘가|승가|즐|증|가|중)$', '', clean)
     clean = re.sub(r'\s+', '', clean)
     if not clean:
         return None
-
-    # ── 접미사 제거 후에도 효율류 패턴이 남아있으면 재체크 ──
     if re.search(r'[효요호][율률롤윤]', clean):
         if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
             return "궁극기 충전 효율"
@@ -241,7 +222,6 @@ def normalize_korean_text(text):
             return "치유 효율"
         else:
             return "효율"
-
     if re.search(r'궁[극국귱]', clean) and re.search(r'(충[전젼]|획득)', clean):
         return "궁극기 충전 효율"
     if re.search(r'주[요오]|능[력럭]', clean):
@@ -304,7 +284,6 @@ def normalize_korean_text(text):
         return "사기"
     if re.search(r'의[료로]', clean):
         return "의료"
-
     return None
 
 # ============================================================
@@ -378,6 +357,66 @@ def click_position(pos):
         return False
 
 # ============================================================
+# ✅ 그리드 영역 스크린샷 (스크롤 비교용)
+# ============================================================
+def capture_grid_screenshot():
+    """그리드 좌측(아이템 슬롯) 영역을 다운샘플 그레이스케일로 캡처"""
+    try:
+        if not game_window_rect:
+            return None
+        bbox = (
+            game_window_rect['x'],
+            game_window_rect['y'],
+            game_window_rect['x'] + int(game_window_rect['width'] * 0.55),
+            game_window_rect['y'] + game_window_rect['height'],
+        )
+        img  = np.array(ImageGrab.grab(bbox=bbox))
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        # 비교 속도를 위해 160×240 으로 축소
+        small = cv2.resize(gray, (160, 240), interpolation=cv2.INTER_AREA)
+        return small
+    except:
+        return None
+
+def is_screenshot_same(img_a, img_b, threshold=0.995):
+    """
+    두 스크린샷의 유사도 비교.
+    NCC(정규화 상관계수) >= threshold 이면 동일로 판단.
+    """
+    if img_a is None or img_b is None:
+        return False
+    if img_a.shape != img_b.shape:
+        return False
+    result = cv2.matchTemplate(
+        img_a.astype(np.float32),
+        img_b.astype(np.float32),
+        cv2.TM_CCORR_NORMED
+    )
+    score = float(result[0][0])
+    print(f"   📸 스크린샷 유사도: {score:.4f} (기준 ≥ {threshold} 이면 동일)")
+    return score >= threshold
+
+# ============================================================
+# ✅ 스크롤 실행
+# ============================================================
+def do_scroll_down():
+    """그리드 중앙 위치에서 마우스 휠 아래로"""
+    if not game_window_rect:
+        return
+    cx = game_window_rect['x'] + int(game_window_rect['width']  * 0.25)
+    cy = game_window_rect['y'] + int(game_window_rect['height'] * 0.50)
+    try:
+        win32api.SetCursorPos((cx, cy))
+        time.sleep(0.1)
+    except:
+        pass
+    for _ in range(SCROLL_WHEEL_CLICKS):
+        win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, cx, cy, -120, 0)
+        time.sleep(0.06)
+    print(f"   🖱️ 스크롤 다운 {SCROLL_WHEEL_CLICKS}클릭")
+    time.sleep(SCROLL_SETTLE_DELAY)
+
+# ============================================================
 # 황색 아이템 감지
 # ============================================================
 def detect_yellow_items():
@@ -401,10 +440,10 @@ def detect_yellow_items():
         mask         = cv2.inRange(hsv, lower_yellow, upper_yellow)
         contours, _  = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        detected     = []
-        min_width    = get_scaled_value(40)
-        max_height   = get_scaled_value(15)
-        y_offset     = get_scaled_value(60)
+        detected   = []
+        min_width  = get_scaled_value(40)
+        max_height = get_scaled_value(15)
+        y_offset   = get_scaled_value(60)
 
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
@@ -424,7 +463,7 @@ def is_item_at_position(target_pos, tolerance=None):
     return False
 
 # ============================================================
-# 템플릿 로드 (잠금 + 폐기 모두 로드)
+# 템플릿 로드
 # ============================================================
 def load_lock_template():
     global lock_template, lock_button_template, dispose_template, dispose_button_template
@@ -488,7 +527,7 @@ def find_lock_button():
         return None
 
 # ============================================================
-# ✅ 폐기 버튼 찾기 (우측 빨간 휴지통 버튼)
+# 폐기 버튼 찾기
 # ============================================================
 def find_dispose_button():
     if dispose_button_template is None:
@@ -509,8 +548,8 @@ def find_dispose_button():
         search_gray = cv2.cvtColor(search_img, cv2.COLOR_RGB2GRAY)
         search_hsv  = cv2.cvtColor(search_img, cv2.COLOR_RGB2HSV)
 
-        THRESHOLD    = 0.55
-        SCALES       = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8]
+        THRESHOLD = 0.55
+        SCALES    = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8]
 
         best_val = -1
         best_loc = None
@@ -537,16 +576,13 @@ def find_dispose_button():
             print(f"   ✅ 템플릿 매칭 성공: ({cx}, {cy})")
             return (cx, cy)
 
-        # ── 색상 폴백 ──
         print(f"   🎨 색상 기반 폴백 시도 (점수 {best_val:.3f} < {THRESHOLD})")
         mask1 = cv2.inRange(search_hsv, np.array([0,   50, 60]), np.array([15,  255, 255]))
         mask2 = cv2.inRange(search_hsv, np.array([160, 50, 60]), np.array([180, 255, 255]))
         red_mask = cv2.bitwise_or(mask1, mask2)
-
         kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN,  kernel)
-
         contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             best_cnt = max(contours, key=cv2.contourArea)
@@ -568,10 +604,9 @@ def find_dispose_button():
         return None
 
 # ============================================================
-# 아이템 잠금 여부 확인 (템플릿 매칭)
+# 아이템 잠금/폐기 상태 확인
 # ============================================================
 def _scale_template(template):
-    """current_scale 에 맞게 템플릿 크기 조정"""
     if current_scale == 1.0:
         return template
     scaled_w = max(1, int(template.shape[1] * current_scale))
@@ -579,7 +614,6 @@ def _scale_template(template):
     return cv2.resize(template, (scaled_w, scaled_h))
 
 def _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25):
-    """아이콘 주변 검색 영역 좌표 계산"""
     half_w = int(grid_spacing[0] * 0.45)
     half_h = int(grid_spacing[1] * 0.45)
     cx = item_pos[0] + int(grid_spacing[0] * offset_x_ratio)
@@ -591,7 +625,6 @@ def _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25):
     return (x1, y1, x2, y2)
 
 def _match_template_in_region(bbox, template, threshold=0.78):
-    """지정 영역에서 템플릿 매칭 점수가 threshold 이상인지 반환"""
     try:
         if (bbox[2] - bbox[0]) < 10 or (bbox[3] - bbox[1]) < 10:
             return False
@@ -612,45 +645,30 @@ def is_item_locked_template(item_pos):
     return _match_template_in_region(bbox, lock_template, threshold=0.78)
 
 def is_item_disposed_template(item_pos):
-    """
-    아이템 슬롯 좌하단의 폐기(빨간 휴지통) 마크를 확인합니다.
-    색상 기반 감지: 빨간 픽셀 수가 임계값 이상이면 폐기로 판단
-    """
     bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
-
     if (bbox[2] - bbox[0]) < 5 or (bbox[3] - bbox[1]) < 5:
         return False
-
     RED_PIXEL_MIN = max(30, int(grid_spacing[0] * grid_spacing[1] * 0.005))
-
     try:
         region_img = np.array(ImageGrab.grab(bbox=bbox))
         hsv        = cv2.cvtColor(region_img, cv2.COLOR_RGB2HSV)
-
-        red_mask1 = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
-        red_mask2 = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
-        red_mask  = cv2.bitwise_or(red_mask1, red_mask2)
-
-        kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-
-        red_pixels   = cv2.countNonZero(red_mask)
+        red_mask1  = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
+        red_mask2  = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
+        red_mask   = cv2.bitwise_or(red_mask1, red_mask2)
+        kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        red_mask   = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        red_pixels = cv2.countNonZero(red_mask)
         total_pixels = region_img.shape[0] * region_img.shape[1]
         red_ratio    = red_pixels / total_pixels if total_pixels > 0 else 0
-
         print(f"   🎨 빨간 픽셀: {red_pixels}개 (최소:{RED_PIXEL_MIN}) 비율:{red_ratio:.3f}")
-
         if red_pixels >= RED_PIXEL_MIN:
-            print(f"   ✅ 폐기 마크 감지 성공 (빨간 픽셀 {red_pixels}개)")
+            print(f"   ✅ 폐기 마크 감지 성공")
             return True
         else:
             print(f"   ❌ 빨간 픽셀 부족 → 폐기 마크 없음")
             return False
-
     except Exception as e:
         print(f"   ❌ 폐기 마크 탐색 오류: {e}")
-        import traceback
-        traceback.print_exc()
         return False
 
 # ============================================================
@@ -776,7 +794,7 @@ def get_item_position(row, col):
             first_item_pos[1] + row * grid_spacing[1])
 
 # ============================================================
-# ✅ 전체 그리드 사전 스캔 (잠금 + 폐기 동시 확인)
+# 전체 그리드 사전 스캔
 # ============================================================
 def pre_scan_all_locks():
     global lock_status_cache
@@ -819,7 +837,7 @@ def pre_scan_all_locks():
                 print(f"🔓 [{row},{col}] 잠금/폐기 안됨")
 
             progress_label.config(
-                text=f"사전 확인: {total_items}/24 | 잠금:{locked_items} 폐기:{disposed_items}")
+                text=f"사전 확인: {total_items}/{GRID_ROWS*GRID_COLS} | 잠금:{locked_items} 폐기:{disposed_items}")
             root.update()
             time.sleep(0.03)
 
@@ -830,13 +848,55 @@ def pre_scan_all_locks():
     return total_items, locked_items, disposed_items
 
 # ============================================================
+# ✅ 스크롤 후 마지막 줄(GRID_ROWS-1)만 재스캔
+# ============================================================
+def rescan_last_row():
+    """
+    스크롤 후 화면 맨 아래 행(row = GRID_ROWS-1)만 잠금/폐기 상태 재스캔.
+    새로 나타난 아이템 수 반환.
+    """
+    global lock_status_cache
+
+    last_row  = GRID_ROWS - 1
+    new_items = 0
+
+    print(f"\n🔄 마지막 줄(화면 row={last_row}) 재스캔...")
+    status_label.config(text="🔄 새 아이템 확인 중...", fg="#f39c12")
+    root.update()
+
+    for col in range(GRID_COLS):
+        item_pos = get_item_position(last_row, col)
+
+        if not is_item_at_position(item_pos):
+            lock_status_cache[(last_row, col)] = "empty"
+            print(f"   [{last_row},{col}] 비어있음")
+            continue
+
+        new_items += 1
+
+        if is_item_locked_template(item_pos):
+            lock_status_cache[(last_row, col)] = "locked"
+            print(f"   🔒 [{last_row},{col}] 잠금됨")
+        elif is_item_disposed_template(item_pos):
+            lock_status_cache[(last_row, col)] = "disposed"
+            print(f"   🗑️ [{last_row},{col}] 폐기됨")
+        else:
+            lock_status_cache[(last_row, col)] = "unlocked"
+            print(f"   🔓 [{last_row},{col}] 새 아이템")
+
+        time.sleep(0.02)
+
+    print(f"   ✅ 재스캔 완료: 새 아이템 {new_items}개")
+    return new_items
+
+# ============================================================
 # OCR
 # ============================================================
 def preprocess_image_fast(img):
-    arr    = np.array(img)
-    gray   = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if len(arr.shape) == 3 else arr
+    arr     = np.array(img)
+    gray    = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if len(arr.shape) == 3 else arr
     resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    inv    = cv2.bitwise_not(resized)
+    inv     = cv2.bitwise_not(resized)
     _, bin_ = cv2.threshold(inv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return Image.fromarray(bin_)
 
@@ -862,15 +922,13 @@ def scan_options_single(region, position=None):
         if text.strip():
             print(f"🔍 원본 OCR: {repr(text.strip())}")
 
-        # 복합 키워드 목록 (공백 포함 키워드)
         compound_keywords = ["궁극기 충전 효율", "치유 효율"]
-        found  = []
-        seen   = set()
+        found = []
+        seen  = set()
 
         if text.strip():
             lines  = text.split('\n')
             all_kw = []
-
             for line in lines:
                 line = line.strip()
                 if not line:
@@ -880,14 +938,10 @@ def scan_options_single(region, position=None):
                 if norm:
                     all_kw.append(norm)
 
-            # 전체 텍스트를 하나로 합쳐서 복합 키워드 추가 시도
             full_norm = normalize_korean_text(re.sub(r'\s+', '', text))
             if full_norm in compound_keywords and full_norm not in all_kw:
                 all_kw.insert(0, full_norm)
 
-            # ── 복합 키워드 앞부분 단어만 제거 대상으로 설정 ──
-            # "치유 효율" → "치유"만 제거, "효율"은 독립 옵션으로 유지
-            # "궁극기 충전 효율" → "궁극기", "충전"만 제거, "효율"은 유지
             exclude_parts = set()
             for ck in compound_keywords:
                 if ck in all_kw:
@@ -895,7 +949,6 @@ def scan_options_single(region, position=None):
                     for part in parts[:-1]:
                         exclude_parts.add(part)
 
-            # ── OCR 줄 순서 그대로 등록 (복합어 앞부분 단어 및 중복 제외) ──
             for kw in all_kw:
                 if kw not in seen:
                     if kw in exclude_parts:
@@ -934,79 +987,46 @@ def check_weapon_match(options):
     return matched
 
 # ============================================================
-# ✅ 메인 스캔 루프
+# 단일 아이템 처리
 # ============================================================
-def scan_loop():
-    global auto_scan_enabled, scan_state
-
-    if not auto_scan_enabled:
-        return
-
-    row, col = scan_state["current_row"], scan_state["current_col"]
-
-    if row >= GRID_ROWS:
-        status_label.config(
-            text=f"✅ 완료! (스캔:{scan_state['total_scanned']} 잠금:{scan_state['total_locked']} 폐기:{scan_state['total_disposed']})",
-            fg="#2ecc71")
-        stop_scan_ui()
-        saved = save_scan_log()
-        if saved:
-            messagebox.showinfo("스캔 완료",
-                f"스캔 완료!\n\n"
-                f"잠금: {scan_state['total_locked']}개\n"
-                f"폐기: {scan_state['total_disposed']}개\n\n"
-                f"로그: {saved}")
-        return
-
+def process_item(row, col):
+    """
+    한 슬롯을 클릭 → OCR → 잠금/폐기.
+    반환: 'done' | 'empty' | 'skip'
+    """
     item_pos     = get_item_position(row, col)
     cache_status = lock_status_cache.get((row, col), None)
+    abs_row      = total_row_offset + row
 
     print(f"\n{'='*50}")
-    print(f"🔍 [{row},{col}] 스캔 | 위치: {item_pos} | 캐시: {cache_status}")
+    print(f"🔍 [절대:{abs_row},{col}] (화면:{row},{col}) | 위치: {item_pos} | 캐시: {cache_status}")
 
-    # ── 빈 슬롯 ──
     if cache_status == "empty":
-        print(f"⚠️ [{row},{col}] 빈 슬롯 - 종료")
-        scan_log.append({'position': (row, col), 'status': 'empty',
+        scan_log.append({'position': (abs_row, col), 'status': 'empty',
                          'options': [], 'matches': [], 'locked': False})
-        stop_scan_ui()
-        saved = save_scan_log()
-        if saved:
-            messagebox.showinfo("스캔 완료", f"스캔 완료!\n\n로그: {saved}")
-        return
+        return 'empty'
 
-    # ── 이미 잠금됨 → 건너뜀 ──
     if cache_status == "locked":
-        print(f"🔒 [{row},{col}] 이미 잠금됨 - 건너뜀")
         match_label.config(text="🔒 이미 잠금됨", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금)", fg="#95a5a6")
-        scan_log.append({'position': (row, col), 'status': 'pre_locked',
+        scan_log.append({'position': (abs_row, col), 'status': 'pre_locked',
                          'options': [], 'matches': [], 'locked': False})
-        _advance_and_next(100)
-        return
+        return 'skip'
 
-    # ── 이미 폐기됨 → 건너뜀 ──
     if cache_status == "disposed":
-        print(f"🗑️ [{row},{col}] 이미 폐기됨 - 건너뜀")
         match_label.config(text="🗑️ 이미 폐기됨", fg="#95a5a6")
         option_label.config(text="건너뜀 (폐기)", fg="#95a5a6")
-        scan_log.append({'position': (row, col), 'status': 'pre_disposed',
+        scan_log.append({'position': (abs_row, col), 'status': 'pre_disposed',
                          'options': [], 'matches': [], 'locked': False})
-        _advance_and_next(100)
-        return
+        return 'skip'
 
-    # ── 실시간 존재 확인 ──
+    # 실시간 존재 확인
     if not is_item_at_position(item_pos):
-        print(f"⚠️ [{row},{col}] 아이템 없음 - 종료")
-        scan_log.append({'position': (row, col), 'status': 'empty',
+        scan_log.append({'position': (abs_row, col), 'status': 'empty',
                          'options': [], 'matches': [], 'locked': False})
-        stop_scan_ui()
-        saved = save_scan_log()
-        if saved:
-            messagebox.showinfo("스캔 완료", f"스캔 완료!\n\n로그: {saved}")
-        return
+        return 'empty'
 
-    # ── 아이템 클릭 ──
+    # 클릭
     click_position(item_pos)
     time.sleep(0.15)
     try:
@@ -1015,26 +1035,22 @@ def scan_loop():
         pass
     time.sleep(scan_delay_after_click)
 
-    # ── 클릭 후 실시간 잠금/폐기 재확인 ──
+    # 클릭 후 재확인
     if is_item_locked_template(item_pos):
-        print(f"🔒 [{row},{col}] 클릭 후 재확인: 잠금됨 → 건너뜀")
         match_label.config(text="🔒 잠금됨 (재확인)", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금 재확인)", fg="#95a5a6")
-        scan_log.append({'position': (row, col), 'status': 'pre_locked',
+        scan_log.append({'position': (abs_row, col), 'status': 'pre_locked',
                          'options': [], 'matches': [], 'locked': False})
-        _advance_and_next(100)
-        return
+        return 'skip'
 
     if is_item_disposed_template(item_pos):
-        print(f"🗑️ [{row},{col}] 클릭 후 재확인: 폐기됨 → 건너뜀")
         match_label.config(text="🗑️ 폐기됨 (재확인)", fg="#95a5a6")
         option_label.config(text="건너뜀 (폐기 재확인)", fg="#95a5a6")
-        scan_log.append({'position': (row, col), 'status': 'pre_disposed',
+        scan_log.append({'position': (abs_row, col), 'status': 'pre_disposed',
                          'options': [], 'matches': [], 'locked': False})
-        _advance_and_next(100)
-        return
+        return 'skip'
 
-    # ── OCR 시도 (최대 2회) ──
+    # OCR (최대 2회)
     detected_options = []
     for attempt in range(2):
         if attempt > 0:
@@ -1047,13 +1063,10 @@ def scan_loop():
             except:
                 pass
             time.sleep(scan_delay_after_click)
-
         detected_options = scan_options(position=(row, col))
         if detected_options:
-            print(f"✅ OCR 성공 ({attempt+1}번째)")
             break
 
-    # ── 결과 처리 ──
     item_locked         = False
     item_disposed       = False
     item_dispose_failed = False
@@ -1065,48 +1078,36 @@ def scan_loop():
 
         if matched_weapons:
             match_label.config(text=f"✅ 일치: {', '.join(matched_weapons)}", fg="#27ae60")
-            print(f"🎯 매칭: {', '.join(matched_weapons)}")
-
             btn = find_lock_button()
             if not btn:
                 time.sleep(0.08)
                 btn = find_lock_button()
-
             if btn:
                 click_position(btn)
                 scan_state["total_locked"] += 1
                 item_locked = True
-                print("🔐 잠금 완료")
                 time.sleep(0.1)
             else:
-                print("❌ 잠금 버튼 찾기 실패")
                 match_label.config(text=f"✅ 일치: {', '.join(matched_weapons)} (잠금 실패)", fg="#e67e22")
-
         else:
             match_label.config(text="🗑️ 불일치 → 폐기", fg="#e74c3c")
-            print("❌ 무기 매칭 없음 → 폐기 버튼 탐색")
-
             dispose_btn = find_dispose_button()
             if not dispose_btn:
                 time.sleep(0.08)
                 dispose_btn = find_dispose_button()
-
             if dispose_btn:
                 click_position(dispose_btn)
                 scan_state["total_disposed"] += 1
                 item_disposed = True
-                print("🗑️ 폐기 버튼 클릭 완료")
                 time.sleep(0.1)
             else:
-                print("⚠️ 폐기 버튼 찾기 실패")
                 match_label.config(text="❌ 불일치 (폐기 버튼 미발견)", fg="#e74c3c")
                 item_dispose_failed = True
     else:
         option_label.config(text="❌ OCR 실패 (2회)", fg="#e74c3c")
-        print("❌ OCR 완전 실패")
 
     scan_log.append({
-        'position':       (row, col),
+        'position':       (abs_row, col),
         'status':         'scanned',
         'options':        detected_options,
         'matches':        matched_weapons,
@@ -1114,27 +1115,115 @@ def scan_loop():
         'disposed':       item_disposed,
         'dispose_failed': item_dispose_failed,
     })
+    return 'done'
+
+# ============================================================
+# ✅ 메인 스캔 루프 (무제한 스크롤)
+# ============================================================
+def scan_loop():
+    global auto_scan_enabled, scan_state, last_grid_screenshot, total_row_offset
+
+    if not auto_scan_enabled:
+        return
+
+    row = scan_state["current_row"]
+    col = scan_state["current_col"]
+
+    # ── 현재 페이지(6행) 모두 처리 완료 → 스크롤 시도 ──
+    if row >= GRID_ROWS:
+        print(f"\n{'='*60}")
+        print(f"📜 현재 화면 완료. 스크롤 시도...")
+        status_label.config(text="📜 스크롤 중...", fg="#f39c12")
+        root.update()
+
+        # 스크롤 전 스크린샷
+        before_scroll = capture_grid_screenshot()
+
+        # 스크롤 실행
+        do_scroll_down()
+
+        # 스크롤 후 스크린샷
+        after_scroll = capture_grid_screenshot()
+
+        # ✅ 전후 동일하면 끝
+        if is_screenshot_same(before_scroll, after_scroll):
+            print("🛑 스크롤 전후 화면 동일 → 마지막 페이지. 종료.")
+            _finish_scan()
+            return
+
+        # 화면이 바뀌었으면 ──
+        # 스크롤로 인해 이전 5개 행이 위로 올라가고 새 행이 맨 아래에 등장
+        # total_row_offset 는 (GRID_ROWS - 1)씩 증가 (마지막 행만 새 아이템)
+        total_row_offset += (GRID_ROWS - 1)
+
+        # 마지막 줄만 재스캔
+        new_items = rescan_last_row()
+
+        if new_items == 0:
+            print("🛑 스크롤 후 새 아이템 없음. 종료.")
+            _finish_scan()
+            return
+
+        # 마지막 줄(row=5)부터 다시 처리
+        scan_state["current_row"] = GRID_ROWS - 1
+        scan_state["current_col"] = 0
+
+        with cache_lock:
+            ocr_cache.clear()
+
+        root.after(200, scan_loop)
+        return
+
+    # ── 일반 슬롯 처리 ──
+    result = process_item(row, col)
+    scan_state["total_scanned"] += 1
 
     progress_label.config(
-        text=f"진행: {scan_state['total_scanned']+1}/24 | "
+        text=f"총 처리: {scan_state['total_scanned']}개 | "
              f"잠금: {scan_state['total_locked']} | "
              f"폐기: {scan_state['total_disposed']}")
+    root.update()
 
-    _advance_and_next(int(scan_delay_between_items * 1000))
+    if result == 'empty':
+        if col == 0:
+            # 행 첫 슬롯이 비어있으면 → 스크롤 필요 여부 확인
+            # row >= GRID_ROWS 로 만들어 스크롤 분기 탈 수 있게
+            scan_state["current_row"] = GRID_ROWS
+            scan_state["current_col"] = 0
+            root.after(100, scan_loop)
+        else:
+            scan_state["current_col"] = 0
+            scan_state["current_row"] += 1
+            root.after(100, scan_loop)
+        return
 
-def _advance_and_next(delay_ms):
-    scan_state["total_scanned"] += 1
-    scan_state["current_col"]   += 1
+    # 다음 슬롯
+    scan_state["current_col"] += 1
     if scan_state["current_col"] >= GRID_COLS:
-        scan_state["current_col"]  = 0
+        scan_state["current_col"] = 0
         scan_state["current_row"] += 1
-    root.after(delay_ms, scan_loop)
+
+    root.after(int(scan_delay_between_items * 1000), scan_loop)
+
+def _finish_scan():
+    status_label.config(
+        text=f"✅ 완료! 총:{scan_state['total_scanned']} 잠금:{scan_state['total_locked']} 폐기:{scan_state['total_disposed']}",
+        fg="#2ecc71")
+    stop_scan_ui()
+    saved = save_scan_log()
+    if saved:
+        messagebox.showinfo("스캔 완료",
+            f"스캔 완료!\n\n"
+            f"총 처리: {scan_state['total_scanned']}개\n"
+            f"잠금: {scan_state['total_locked']}개\n"
+            f"폐기: {scan_state['total_disposed']}개\n\n"
+            f"로그: {saved}")
 
 # ============================================================
 # UI 제어
 # ============================================================
 def toggle_auto_scan():
-    global auto_scan_enabled, scan_log
+    global auto_scan_enabled, scan_log, last_grid_screenshot, total_row_offset
 
     if auto_scan_enabled:
         stop_scan_ui()
@@ -1145,7 +1234,7 @@ def toggle_auto_scan():
         return
 
     if dispose_button_template is None:
-        print("⚠️ dispose_button_template.png 없음 - 폐기 기능 비활성화 상태로 실행")
+        print("⚠️ dispose_button_template.png 없음 - 폐기 기능 비활성화")
 
     if not find_game_window():
         response = messagebox.askyesno("게임 창 찾기 실패",
@@ -1162,7 +1251,9 @@ def toggle_auto_scan():
     auto_detect_grid()
 
     if scan_region and first_item_pos:
-        scan_log = []
+        scan_log             = []
+        last_grid_screenshot = None
+        total_row_offset     = 0
         init_log_file()
 
         total, locked, disposed = pre_scan_all_locks()
@@ -1206,7 +1297,7 @@ keyboard.Listener(on_press=on_key_press).start()
 # ============================================================
 root = tk.Tk()
 root.title("Endfield Auto Scanner")
-root.geometry("600x580")
+root.geometry("600x620")
 root.attributes("-topmost", True)
 
 style = ttk.Style()
@@ -1216,7 +1307,39 @@ f = tk.Frame(root, padx=20, pady=20, bg="#ecf0f1")
 f.pack(fill="both", expand=True)
 
 tk.Label(f, text="엔드필드 자동 잠금/폐기 ⚡",
-         font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 20))
+         font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 10))
+
+# 스크롤 설정
+scroll_frame = tk.LabelFrame(f, text="⚙️ 스크롤 설정", bg="#ecf0f1",
+                              font=("Malgun Gothic", 9, "bold"), padx=10, pady=5)
+scroll_frame.pack(fill="x", pady=(0, 10))
+
+sf = tk.Frame(scroll_frame, bg="#ecf0f1")
+sf.pack(fill="x")
+
+tk.Label(sf, text="스크롤 클릭 수:", bg="#ecf0f1",
+         font=("Malgun Gothic", 9)).grid(row=0, column=0, sticky="w")
+scroll_clicks_var = tk.IntVar(value=SCROLL_WHEEL_CLICKS)
+tk.Spinbox(sf, from_=1, to=20, width=4,
+           textvariable=scroll_clicks_var,
+           font=("Malgun Gothic", 9)).grid(row=0, column=1, padx=(4, 12))
+
+tk.Label(sf, text="대기(초):", bg="#ecf0f1",
+         font=("Malgun Gothic", 9)).grid(row=0, column=2, sticky="w")
+scroll_settle_var = tk.DoubleVar(value=SCROLL_SETTLE_DELAY)
+tk.Spinbox(sf, from_=0.2, to=3.0, increment=0.1, width=4,
+           textvariable=scroll_settle_var,
+           font=("Malgun Gothic", 9), format="%.1f").grid(row=0, column=3, padx=(4, 12))
+
+def apply_scroll_settings():
+    global SCROLL_WHEEL_CLICKS, SCROLL_SETTLE_DELAY
+    SCROLL_WHEEL_CLICKS = scroll_clicks_var.get()
+    SCROLL_SETTLE_DELAY = scroll_settle_var.get()
+    print(f"⚙️ 스크롤 설정: {SCROLL_WHEEL_CLICKS}클릭 / 대기 {SCROLL_SETTLE_DELAY}초")
+
+tk.Button(sf, text="적용", command=apply_scroll_settings,
+          font=("Malgun Gothic", 8), bg="#3498db", fg="white",
+          relief="flat", padx=6).grid(row=0, column=4)
 
 auto_btn = ttk.Button(f, text="▶️ 자동 스캔 시작 (F1)", command=toggle_auto_scan)
 auto_btn.pack(pady=10, fill="x")
@@ -1225,7 +1348,7 @@ status_label = tk.Label(f, text="⏳ 대기 중...",
                         font=("Malgun Gothic", 12, "bold"), bg="#ecf0f1", fg="#95a5a6")
 status_label.pack(pady=(10, 5))
 
-progress_label = tk.Label(f, text="진행: 0/24 | 잠금: 0 | 폐기: 0",
+progress_label = tk.Label(f, text="총 처리: 0개 | 잠금: 0 | 폐기: 0",
                           font=("Malgun Gothic", 10), bg="#ecf0f1", fg="#7f8c8d")
 progress_label.pack(pady=5)
 
@@ -1242,13 +1365,16 @@ match_label = tk.Label(result_frame, text="매칭: -", bg="white", anchor="w",
 match_label.pack(fill="x", pady=3)
 
 info_label = tk.Label(result_frame,
-    text="💡 옵션 불일치 시 자동으로 폐기(휴지통) 버튼 클릭",
+    text="💡 불일치 → 폐기 버튼 자동 클릭\n"
+         "💡 24개 이후 스크롤 → 마지막 줄만 새로 인식\n"
+         "💡 스크롤 전후 화면 동일하면 자동 종료",
     bg="white", anchor="w", font=("Malgun Gothic", 8), fg="#7f8c8d")
 info_label.pack(fill="x", pady=(6, 0))
 
 help_label = tk.Label(f,
     text="F1: 스캔 시작/중지  |  F2: 강제 중지\n"
-         "필요 파일: lock_template / lock_button / dispose_template / dispose_button",
+         "필요 파일: lock_template / lock_button / dispose_template / dispose_button\n"
+         "⚠️ 스크롤 클릭 수를 게임 감도에 맞게 조절 (기본: 3)",
     bg="#ecf0f1", fg="#7f8c8d", font=("Malgun Gothic", 8))
 help_label.pack(pady=(10, 0))
 

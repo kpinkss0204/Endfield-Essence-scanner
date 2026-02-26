@@ -93,10 +93,10 @@ GRID_ROWS = 6  # 화면에 보이는 행 수
 # ============================================================
 # 스크롤 관련 전역 변수
 # ============================================================
-SCROLL_WHEEL_CLICKS  = 3     # 스크롤 한 번에 내릴 휠 클릭 수
-SCROLL_SETTLE_DELAY  = 0.6   # 스크롤 후 안정 대기(초)
-last_grid_screenshot = None  # 스크롤 전 화면 비교용
-total_row_offset     = 0     # 로그용 누적 행 오프셋
+SCROLL_WHEEL_CLICKS  = 3
+SCROLL_SETTLE_DELAY  = 0.6
+last_grid_screenshot = None
+total_row_offset     = 0
 
 auto_scan_enabled = False
 scan_state = {
@@ -357,7 +357,7 @@ def click_position(pos):
         return False
 
 # ============================================================
-# ✅ 그리드 영역 스크린샷 (스크롤 비교용)
+# 그리드 영역 스크린샷 (스크롤 비교용)
 # ============================================================
 def capture_grid_screenshot():
     """그리드 좌측(아이템 슬롯) 영역을 다운샘플 그레이스케일로 캡처"""
@@ -372,17 +372,12 @@ def capture_grid_screenshot():
         )
         img  = np.array(ImageGrab.grab(bbox=bbox))
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        # 비교 속도를 위해 160×240 으로 축소
         small = cv2.resize(gray, (160, 240), interpolation=cv2.INTER_AREA)
         return small
     except:
         return None
 
 def is_screenshot_same(img_a, img_b, threshold=0.995):
-    """
-    두 스크린샷의 유사도 비교.
-    NCC(정규화 상관계수) >= threshold 이면 동일로 판단.
-    """
     if img_a is None or img_b is None:
         return False
     if img_a.shape != img_b.shape:
@@ -397,7 +392,7 @@ def is_screenshot_same(img_a, img_b, threshold=0.995):
     return score >= threshold
 
 # ============================================================
-# ✅ 스크롤 실행
+# 스크롤 실행
 # ============================================================
 def do_scroll_down():
     """그리드 중앙 위치에서 마우스 휠 아래로"""
@@ -644,29 +639,102 @@ def is_item_locked_template(item_pos):
     bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
     return _match_template_in_region(bbox, lock_template, threshold=0.78)
 
+# ============================================================
+# [수정] 폐기 마크 감지
+# ============================================================
+# 이미지 분석 결과 (2000x1249 스크린샷 기준):
+#
+# - item_pos: detect_yellow_items()가 반환하는 좌표
+#             = 황색 이름바의 (중앙 x, y - 60px)
+#
+# - 폐기 마크(빨간 쓰레기통) 위치:
+#     item_pos 기준 x_offset ≈ -0.39 * slot_w  (왼쪽)
+#                   y_offset ≈ +0.30 * slot_h  (아래)
+#
+# - 분홍/빨간 아이템 아이콘 중심 위치:
+#     item_pos 기준 x_offset ≈ +0.10 * slot_w  (중앙 오른쪽)
+#                   y_offset ≈ -0.15 * slot_h  (위쪽)
+#
+# ⟹ 탐색 영역을 item_pos 왼쪽·아래쪽 소영역으로 제한하면
+#    분홍 아이콘 영역(위쪽)은 완전히 제외되고 폐기 마크만 포함됨.
+#
+# 검증된 탐색 파라미터:
+#   x: item_pos[0] - slot_w*0.55  ~  item_pos[0] - slot_w*0.15
+#   y: item_pos[1] + slot_h*0.10  ~  item_pos[1] + slot_h*0.55
+#
+# 폐기 마크 있을 때 빨강 픽셀: ~180~200px
+# 분홍 아이콘만 있을 때 빨강 픽셀: 0~1px
+# ⟹ 임계값 >= 30px 으로 완벽히 분리됨
+
 def is_item_disposed_template(item_pos):
-    bbox = _icon_search_bbox(item_pos, offset_x_ratio=-0.38, offset_y_ratio=0.25)
-    if (bbox[2] - bbox[0]) < 5 or (bbox[3] - bbox[1]) < 5:
+    """
+    폐기 마크(슬롯 좌하단 빨간 쓰레기통) 감지.
+
+    핵심:
+    - 탐색 영역을 item_pos 기준 좌하단 소영역으로 제한
+      → 분홍/빨간 아이콘 중심(y_rel=-0.15)이 탐색 영역(y_rel 0.10~0.55)에서 완전 제외
+    - dispose_template 있으면 템플릿 매칭 우선, 실패 시 색상 감지 폴백
+    - 색상 기준: 순수 빨강(H 0~12, 168~180) 픽셀 >= 30개
+    """
+    sw = grid_spacing[0]
+    sh = grid_spacing[1]
+
+    # ── 탐색 영역 계산 ──────────────────────────────────────────
+    # 폐기 마크는 item_pos 기준 왼쪽(-0.39) 아래(+0.30)에 위치
+    # x: item_pos 왼쪽 0.15~0.55 구간 (슬롯 좌측 영역)
+    # y: item_pos 아래 0.10~0.55 구간 (슬롯 하단부)
+    x1 = max(0, item_pos[0] - int(sw * 0.55))
+    y1 = max(0, item_pos[1] + int(sh * 0.10))
+    x2 = max(0, item_pos[0] - int(sw * 0.15))
+    y2 =        item_pos[1] + int(sh * 0.55)
+
+    # ── 1) dispose_template 있으면 슬롯 전체 템플릿 매칭 우선 ───
+    if dispose_template is not None:
+        full_x1 = max(0, item_pos[0] - int(sw * 0.52))
+        full_y1 = max(0, item_pos[1] - int(sh * 0.52))
+        full_x2 = item_pos[0] + int(sw * 0.52)
+        full_y2 = item_pos[1] + int(sh * 0.52)
+        full_bbox = (full_x1, full_y1, full_x2, full_y2)
+        matched = _match_template_in_region(full_bbox, dispose_template, threshold=0.65)
+        if matched:
+            print(f"   ✅ 폐기 마크 템플릿 매칭 성공")
+            return True
+        print(f"   ⚠️ 템플릿 매칭 실패 → 색상 감지 폴백")
+
+    # ── 2) 색상 기반 감지 ────────────────────────────────────────
+    bw = x2 - x1
+    bh = y2 - y1
+    if bw < 5 or bh < 5:
+        print(f"   ❌ 폐기 마크 탐색 영역 너무 작음: ({x1},{y1})-({x2},{y2})")
         return False
-    RED_PIXEL_MIN = max(30, int(grid_spacing[0] * grid_spacing[1] * 0.005))
+
     try:
-        region_img = np.array(ImageGrab.grab(bbox=bbox))
+        region_img = np.array(ImageGrab.grab(bbox=(x1, y1, x2, y2)))
         hsv        = cv2.cvtColor(region_img, cv2.COLOR_RGB2HSV)
-        red_mask1  = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
-        red_mask2  = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
-        red_mask   = cv2.bitwise_or(red_mask1, red_mask2)
-        kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        red_mask   = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+
+        # 순수 빨강(H 0~12, 168~180) — 분홍/마젠타(H 130~167) 완전 제외
+        red_mask1 = cv2.inRange(hsv, np.array([0,   100, 80]), np.array([12,  255, 255]))
+        red_mask2 = cv2.inRange(hsv, np.array([168, 100, 80]), np.array([180, 255, 255]))
+        red_mask  = cv2.bitwise_or(red_mask1, red_mask2)
+
+        kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+
         red_pixels = cv2.countNonZero(red_mask)
-        total_pixels = region_img.shape[0] * region_img.shape[1]
-        red_ratio    = red_pixels / total_pixels if total_pixels > 0 else 0
-        print(f"   🎨 빨간 픽셀: {red_pixels}개 (최소:{RED_PIXEL_MIN}) 비율:{red_ratio:.3f}")
+
+        # 스케일 보정: 1280px 기준 30px, 스케일에 비례
+        RED_PIXEL_MIN = max(10, int(30 * current_scale * current_scale))
+
+        print(f"   🎨 폐기 마크 탐색 | bbox:({x1},{y1})-({x2},{y2}) | "
+              f"빨강:{red_pixels}px (최소:{RED_PIXEL_MIN})")
+
         if red_pixels >= RED_PIXEL_MIN:
             print(f"   ✅ 폐기 마크 감지 성공")
             return True
         else:
-            print(f"   ❌ 빨간 픽셀 부족 → 폐기 마크 없음")
+            print(f"   ❌ 폐기 마크 없음")
             return False
+
     except Exception as e:
         print(f"   ❌ 폐기 마크 탐색 오류: {e}")
         return False
@@ -848,13 +916,9 @@ def pre_scan_all_locks():
     return total_items, locked_items, disposed_items
 
 # ============================================================
-# ✅ 스크롤 후 마지막 줄(GRID_ROWS-1)만 재스캔
+# 스크롤 후 마지막 줄(GRID_ROWS-1)만 재스캔
 # ============================================================
 def rescan_last_row():
-    """
-    스크롤 후 화면 맨 아래 행(row = GRID_ROWS-1)만 잠금/폐기 상태 재스캔.
-    새로 나타난 아이템 수 반환.
-    """
     global lock_status_cache
 
     last_row  = GRID_ROWS - 1
@@ -990,10 +1054,6 @@ def check_weapon_match(options):
 # 단일 아이템 처리
 # ============================================================
 def process_item(row, col):
-    """
-    한 슬롯을 클릭 → OCR → 잠금/폐기.
-    반환: 'done' | 'empty' | 'skip'
-    """
     item_pos     = get_item_position(row, col)
     cache_status = lock_status_cache.get((row, col), None)
     abs_row      = total_row_offset + row
@@ -1020,13 +1080,11 @@ def process_item(row, col):
                          'options': [], 'matches': [], 'locked': False})
         return 'skip'
 
-    # 실시간 존재 확인
     if not is_item_at_position(item_pos):
         scan_log.append({'position': (abs_row, col), 'status': 'empty',
                          'options': [], 'matches': [], 'locked': False})
         return 'empty'
 
-    # 클릭
     click_position(item_pos)
     time.sleep(0.15)
     try:
@@ -1035,7 +1093,6 @@ def process_item(row, col):
         pass
     time.sleep(scan_delay_after_click)
 
-    # 클릭 후 재확인
     if is_item_locked_template(item_pos):
         match_label.config(text="🔒 잠금됨 (재확인)", fg="#95a5a6")
         option_label.config(text="건너뜀 (잠금 재확인)", fg="#95a5a6")
@@ -1050,7 +1107,6 @@ def process_item(row, col):
                          'options': [], 'matches': [], 'locked': False})
         return 'skip'
 
-    # OCR (최대 2회)
     detected_options = []
     for attempt in range(2):
         if attempt > 0:
@@ -1118,7 +1174,7 @@ def process_item(row, col):
     return 'done'
 
 # ============================================================
-# ✅ 메인 스캔 루프 (무제한 스크롤)
+# 메인 스캔 루프 (무제한 스크롤)
 # ============================================================
 def scan_loop():
     global auto_scan_enabled, scan_state, last_grid_screenshot, total_row_offset
@@ -1129,34 +1185,22 @@ def scan_loop():
     row = scan_state["current_row"]
     col = scan_state["current_col"]
 
-    # ── 현재 페이지(6행) 모두 처리 완료 → 스크롤 시도 ──
     if row >= GRID_ROWS:
         print(f"\n{'='*60}")
         print(f"📜 현재 화면 완료. 스크롤 시도...")
         status_label.config(text="📜 스크롤 중...", fg="#f39c12")
         root.update()
 
-        # 스크롤 전 스크린샷
         before_scroll = capture_grid_screenshot()
-
-        # 스크롤 실행
         do_scroll_down()
-
-        # 스크롤 후 스크린샷
         after_scroll = capture_grid_screenshot()
 
-        # ✅ 전후 동일하면 끝
         if is_screenshot_same(before_scroll, after_scroll):
             print("🛑 스크롤 전후 화면 동일 → 마지막 페이지. 종료.")
             _finish_scan()
             return
 
-        # 화면이 바뀌었으면 ──
-        # 스크롤로 인해 이전 5개 행이 위로 올라가고 새 행이 맨 아래에 등장
-        # total_row_offset 는 (GRID_ROWS - 1)씩 증가 (마지막 행만 새 아이템)
         total_row_offset += (GRID_ROWS - 1)
-
-        # 마지막 줄만 재스캔
         new_items = rescan_last_row()
 
         if new_items == 0:
@@ -1164,7 +1208,6 @@ def scan_loop():
             _finish_scan()
             return
 
-        # 마지막 줄(row=5)부터 다시 처리
         scan_state["current_row"] = GRID_ROWS - 1
         scan_state["current_col"] = 0
 
@@ -1174,7 +1217,6 @@ def scan_loop():
         root.after(200, scan_loop)
         return
 
-    # ── 일반 슬롯 처리 ──
     result = process_item(row, col)
     scan_state["total_scanned"] += 1
 
@@ -1186,8 +1228,6 @@ def scan_loop():
 
     if result == 'empty':
         if col == 0:
-            # 행 첫 슬롯이 비어있으면 → 스크롤 필요 여부 확인
-            # row >= GRID_ROWS 로 만들어 스크롤 분기 탈 수 있게
             scan_state["current_row"] = GRID_ROWS
             scan_state["current_col"] = 0
             root.after(100, scan_loop)
@@ -1197,7 +1237,6 @@ def scan_loop():
             root.after(100, scan_loop)
         return
 
-    # 다음 슬롯
     scan_state["current_col"] += 1
     if scan_state["current_col"] >= GRID_COLS:
         scan_state["current_col"] = 0
@@ -1309,7 +1348,6 @@ f.pack(fill="both", expand=True)
 tk.Label(f, text="엔드필드 자동 잠금/폐기 ⚡",
          font=("Malgun Gothic", 16, "bold"), bg="#ecf0f1").pack(pady=(0, 10))
 
-# 스크롤 설정
 scroll_frame = tk.LabelFrame(f, text="⚙️ 스크롤 설정", bg="#ecf0f1",
                               font=("Malgun Gothic", 9, "bold"), padx=10, pady=5)
 scroll_frame.pack(fill="x", pady=(0, 10))

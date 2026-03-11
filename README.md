@@ -75,6 +75,5 @@ python endfield_essence_scanner.py
 ### 게임 창 인식 실패
 → 게임 창 제목에 "Endfield", "엔드필드", "明日方舟" 포함되어 있는지 확인
 
-## 라이선스
-
-MIT License
+## exe 파일 변환
+pyinstaller.exe .\endfield_scanner.spec
